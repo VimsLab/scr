@@ -1,0 +1,9 @@
+path: /media/jakep/eye/scr/pickle/
+train: train2/
+val: val2/
+test: val2/
+
+# Classes
+nc: 2  # number of classes
+names: ['fovea', 'SCR']  # class names
+lr: 0.001

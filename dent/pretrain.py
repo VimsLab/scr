@@ -519,6 +519,9 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
     cleanup()            
 
 
+__all__ = ['pretrainer', 'train_epoch', 'SiameseDataset', 'PositionalEncoding', 'DETREncoder', 
+'SiameseNetwork', 'contrastive_loss_cosine', 'validate', 'tx', 'get_dataset', 'setup', 'cleanup']
+
 if __name__ == '__main__':
     # devices = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     # device_ids = [0, 1]

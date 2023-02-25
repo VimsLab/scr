@@ -441,7 +441,7 @@ def get_dataset(world_size, rank, dataroot, phase, lim, transform, batch_size=64
     return dataloader, sampler
 
 
-def pretrain(rank, world_size, root, dataroot, phases=['sample', 'sample'], resume=False):
+def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], resume=False):
 
     setup(rank, world_size)
 
@@ -531,6 +531,6 @@ if __name__ == '__main__':
 
     # ddp
     world_size = 2
-    mp.spawn(pretrain, args=(world_size, root, dataroot, ['train2', 'val2'], 'best_pretrainer'), nprocs=world_size, join=True)
+    mp.spawn(pretrainer, args=(world_size, root, dataroot, ['train2', 'val2'], 'best_pretrainer'), nprocs=world_size, join=True)
 
     # pretrain(devices, device_ids, root, dataroot)

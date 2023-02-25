@@ -531,6 +531,6 @@ if __name__ == '__main__':
 
     # ddp
     world_size = 2
-    mp.spawn(pretrain, args=(world_size, root, dataroot, ['train2', 'val2'], resume='best_pretrainer'), nprocs=world_size, join=True)
+    mp.spawn(pretrain, args=(world_size, root, dataroot, ['train2', 'val2'], 'best_pretrainer'), nprocs=world_size, join=True)
 
     # pretrain(devices, device_ids, root, dataroot)

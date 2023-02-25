@@ -390,9 +390,9 @@ def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, runni
             embeddings1, embeddings2 = siamese_net(x1, x2)
             loss = contrastive_loss_cosine(embeddings1, embeddings2, targets)
 
-        if torch.isnan(loss):
-            print('NAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAN', targets)
-            print(torch.any(torch.isnan(embeddings1)), torch.any(torch.isnan(embeddings2)))
+        # if torch.isnan(loss):
+        #     print('NAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAN', targets)
+        #     print(torch.any(torch.isnan(embeddings1)), torch.any(torch.isnan(embeddings2)))
 
 
         # Backward pass and optimization
@@ -441,7 +441,7 @@ def get_dataset(world_size, rank, dataroot, phase, lim, transform, batch_size=64
     return dataloader, sampler
 
 
-def pretrain(rank, world_size, root, dataroot):
+def pretrain(rank, world_size, root, dataroot, phases=['sample', 'sample'], resume=False):
 
     setup(rank, world_size)
 
@@ -451,11 +451,11 @@ def pretrain(rank, world_size, root, dataroot):
     
     tx_dict = tx()
     train_loader, train_sampler = get_dataset(world_size, rank, dataroot, 
-                                            phase='train2', lim=100, 
+                                            phase=phases[0], lim=100, 
                                             transform=tx_dict['train'], 
                                             batch_size=batch_size)
     val_loader, val_sampler = get_dataset(world_size, rank, dataroot, 
-                                        phase='val2', lim=50, 
+                                        phase=phases[1], lim=50, 
                                         transform=tx_dict['val'], 
                                         batch_size=batch_size)
 
@@ -469,13 +469,28 @@ def pretrain(rank, world_size, root, dataroot):
     optimizer = torch.optim.Adam(siamese_net.parameters(), lr=0.0001)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.001)
 
+
     best_accuracy = 0
+    start_epoch = 0
+
+    if resume:
+        ckptfile = root + resume + '.pth'
+        ckpts = torch.load(ckptfile, map_location='cpu')
+        siamese_net.load_state_dict(ckpts['model_state_dict'])
+        optimizer.load_state_dict(ckpts['optimizer_state_dict'])
+        start_epoch = ckpts['epoch']+1
+        best_accuracy = ckpts['best_val_acc']
+
+        if rank == 0:
+            print('Resuming training from epoch {}. Loaded weights from {}. Last best accuracy was {}'
+                .format(start_epoch, ckptfile, best_accuracy))
+
 
     # initialize the GradScaler object for automatic mixed precision
     # scaler = GradScaler()
     # Train the network
 
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         train_sampler.set_epoch(epoch)
         train_epoch(rank, siamese_net, optimizer, train_loader, epoch, num_epochs, running_loss=0)
         
@@ -508,11 +523,14 @@ if __name__ == '__main__':
     # devices = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     # device_ids = [0, 1]
 
-    root = '/media/jakep/eye/scr/dent/'
-    dataroot = '/media/jakep/eye/scr/pickle/'
+    # root = '/media/jakep/eye/scr/dent/'
+    # dataroot = '/media/jakep/eye/scr/pickle/'
+    root = './'
+    dataroot = '../pickle/'
+
 
     # ddp
     world_size = 2
-    mp.spawn(pretrain, args=(world_size, root, dataroot), nprocs=world_size, join=True)
+    mp.spawn(pretrain, args=(world_size, root, dataroot, ['train2', 'val2'], resume='best_pretrainer'), nprocs=world_size, join=True)
 
     # pretrain(devices, device_ids, root, dataroot)

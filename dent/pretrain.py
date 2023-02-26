@@ -23,17 +23,7 @@ from torchvision.models import resnet50, ResNet50_Weights
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-# os.environ["RANK"] = "0"
-# os.environ["WORLD_SIZE"] = "2"
-# os.environ['MASTER_ADDR'] = 'localhost'
-# os.environ['MASTER_PORT'] = '12345'
 
-
-# dist.init_process_group(backend="nccl")
-# rank = dist.get_rank()
-# world_size = dist.get_world_size()
-
-# print(rank, world_size)
 TQDM_BAR_FORMAT = '{l_bar}{bar:10}{r_bar}'  # tqdm bar format
 os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
@@ -42,11 +32,10 @@ def setup(rank, world_size):
     # Initialize the process group
     dist.init_process_group(
         backend="nccl",
-        init_method="tcp://127.0.0.1:23456",
+        init_method="tcp://127.0.0.1:24456",
         rank=rank,
         world_size=world_size
     )
-
     # Set the GPU to use
     torch.cuda.set_device(rank)
 
@@ -74,37 +63,38 @@ class SiameseDataset(Dataset):
         if not (Path(pos_file).is_file() and Path(neg_file).is_file()):
             if rank==0:
                 print(f"\nCreating positve and negative pairs for {phase} since they don't exist yet")
-                self.positive_pairs = []
-                self.negative_pairs = []
+            
+            self.positive_pairs = []
+            self.negative_pairs = []
 
-
-                # Create pairs
+            # Create pairs
+            if rank ==0:
                 print(('\n' + '%22s' * 3) % ('Image', 'Positive', 'Negative'))
-                pbars = self.get_pbar(n=4)
+            
+            pbars = self.get_pbar(n=4)
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                    # submit tasks to the executor and get futures
-                    future1 = executor.submit(self.populate, pbars[0])
-                    future2 = executor.submit(self.populate, pbars[1])
-                    future3 = executor.submit(self.populate, pbars[2])
-                    future4 = executor.submit(self.populate, pbars[3])
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                # submit tasks to the executor and get futures
+                future1 = executor.submit(self.populate, pbars[0])
+                future2 = executor.submit(self.populate, pbars[1])
+                future3 = executor.submit(self.populate, pbars[2])
+                future4 = executor.submit(self.populate, pbars[3])
 
 
-                    # wait for all tasks to complete and get results
-                    results = [future1.result(), future2.result(), future3.result(), future4.result()]
-                    print(results)
-                
+                # wait for all tasks to complete and get results
+                results = [future1.result(), future2.result(), future3.result(), future4.result()]            
 
-                # self.negative_pairs = random.sample(self.negative_pairs, min(len(self.negative_pairs), int(2*len(self.positive_pairs))))
+            # self.negative_pairs = random.sample(self.negative_pairs, min(len(self.negative_pairs), int(2*len(self.positive_pairs))))
+            if rank==0:
                 print(len(self.positive_pairs), len(self.negative_pairs))
-                with open(pos_file, 'wb') as f:
-                    pickle.dump(self.positive_pairs, f)
+            with open(pos_file, 'wb') as f:
+                pickle.dump(self.positive_pairs, f)
 
-                with open(neg_file, 'wb') as f:
-                    pickle.dump(self.negative_pairs, f)
+            with open(neg_file, 'wb') as f:
+                pickle.dump(self.negative_pairs, f)
 
         else:
-            if rank in {-1,0}:
+            if rank ==0:
                 print(f"\nLoading positive and negative pairs from pickled lists of {phase}")
             with open(pos_file, 'rb') as f:
                 self.positive_pairs = pickle.load(f)
@@ -123,7 +113,7 @@ class SiameseDataset(Dataset):
 
 
         self.all_pairs = self.positive_pairs + self.negative_pairs
-
+        random.shuffle(self.all_pairs)
     
 
     def limiter(self, n=100, save=False):
@@ -163,8 +153,7 @@ class SiameseDataset(Dataset):
 
     def populate(self, flist):
         pbar = tqdm(enumerate(flist), total=len(flist), bar_format=TQDM_BAR_FORMAT)
-        # pos_pairs = []
-        # neg_pairs = []
+
         for i, fn_i in pbar:
             pid, tid, bid = self._get_person_id(fn_i)
             pos = 0
@@ -197,9 +186,7 @@ class SiameseDataset(Dataset):
         # get the bscan id eg: '5'
         # get person id eg: '104L'
 
-        fn = filename.split('/')[-1]
-        
-        # testid = fn.split('_')[0]+'_'
+        fn = filename.split('/')[-1]        
         lr = fn.find('L')+1
         if not lr:
             lr = fn.find('R')+1
@@ -207,9 +194,6 @@ class SiameseDataset(Dataset):
         pid = fn[:lr]
         testid = fn[:lr+1]
         bscanid = (fn.split('.')[0]).split('_')[-1]
-
-        # print(filename, fn, pid, testid, bscanid)
-        # print(A)
 
         return pid, testid, bscanid
 
@@ -242,56 +226,94 @@ class SiameseDataset(Dataset):
         return len(self.all_pairs)
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=0.1)
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
+# class PositionalEncoding(nn.Module):
+#     def __init__(self, d_model, max_len=5000):
+#         super(PositionalEncoding, self).__init__()
+#         self.dropout = nn.Dropout(p=0.1)
+#         pe = torch.zeros(max_len, d_model)
+#         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+#         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+#         pe[:, 0::2] = torch.sin(position * div_term)
+#         pe[:, 1::2] = torch.cos(position * div_term)
+#         pe = pe.unsqueeze(0).transpose(0, 1)
+#         self.register_buffer('pe', pe)
 
-    def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
-        return self.dropout(x)
+#     def forward(self, x):
+#         x = x + self.pe[:x.size(0), :]
+#         return self.dropout(x)
 
 
-class DETREncoder(nn.Module):
-    def __init__(self, hidden_dim=128, num_layers=3, nhead=8):
+class Encoder(nn.Module):
+    def __init__(self, hidden_dim=256, nheads=8, num_encoder_layers=6, dropout_rate=0.1):
         super().__init__()
         backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
         self.backbone = nn.Sequential(*list(backbone.children())[:-2])
-        self.conv = nn.Conv2d(in_channels=2048, out_channels=hidden_dim, kernel_size=1)
-        self.pos_encoder = PositionalEncoding(hidden_dim)
-        self.transformer_encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead),
-            num_layers=num_layers
-        )
+        self.hidden_dim = hidden_dim
+        self.nheads = nheads
+        self.num_encoder_layers = num_encoder_layers
+        self.dropout_rate = dropout_rate
         
+        # Create a positional encoding module
+        self.position_embedding = nn.Parameter(torch.randn(1, hidden_dim, 1, 1))
         
-        self.fc = nn.Linear(in_features=2048, out_features=hidden_dim)
+        # Create a linear layer for embedding the encoder features
+        self.linear_emb = nn.Linear(2048, hidden_dim)
+        
+        # Create a transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nheads, dropout=dropout_rate)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
+        
+    def forward(self, inputs):
+        # Get the features from the backbone
+        features = self.backbone(inputs)
+        
+        # Flatten the features and apply the linear embedding
+        batch_size, channels, height, width = features.shape
+        features = features.flatten(2).transpose(1, 2) # shape: (batch_size, num_patches, channels)
+        encoder_embedding = self.linear_emb(features) # shape: (batch_size, num_patches, hidden_dim)
+        
+        # Add the positional encoding to the embeddings
+        position_encoding = self.position_embedding.repeat(batch_size, 1, height, width).flatten(2).transpose(1, 2)
+        encoder_embedding += position_encoding # shape: (batch_size, num_patches, hidden_dim)
+        
+        # Apply the transformer encoder
+        encoder_outputs = self.encoder(encoder_embedding.transpose(0, 1)) # shape: (seq_len, batch_size, hidden_dim)
+        
+        return encoder_outputs
 
-    def forward(self, x):
-        features = self.backbone(x)  # (batch_size, 2048, H/32, W/32)
 
-        # features = features.mean(dim=[2, 3])  # (batch_size, 2048)
-        # features = self.fc(features)  # (batch_size, hidden_dim)
-        # features = features.unsqueeze(1)  # (batch_size, 1, hidden_dim)
-        # features = features.unsqueeze(0)  # (1, batch_size, hidden_dim) ~ (num_pixels, batch_size, hidden_dim)
-        features = self.conv(features) # (batch, hidden_dim, H/32, W/32)
-        features = features.flatten(2).permute(2, 0, 1)  # shape: (num_pixels, batch_size, hidden_dim)
-        features = self.pos_encoder(features)  # shape: (num_pixels, batch_size, hidden_dim)
-        # Transformer encoder
-        encoded = self.transformer_encoder(features)  # shape: (num_pixels, batch_size, hidden_dim) 
-        # encoded = self.transformer_encoder(features)  # (batch_size, 1, hidden_dim)
-        # encoded = encoded.squeeze(1)  # (batch_size, hidden_dim)
 
-        # encoded = encoded.permute(1, 0, 2) # (batch_size, num_pixels, hidden_dim) 
+# class DETREncoder(nn.Module):
+#     def __init__(self, hidden_dim=256, num_layers=6, nhead=8):
+#         super().__init__()
+#         backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
+#         self.backbone = nn.Sequential(*list(backbone.children())[:-2])
+#         self.conv = nn.Conv2d(in_channels=2048, out_channels=hidden_dim, kernel_size=1)
+#         self.pos_encoder = PositionalEncoding(hidden_dim)
+#         self.transformer_encoder = nn.TransformerEncoder(
+#             nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead),
+#             num_layers=num_layers
+#         )        
+#         self.fc = nn.Linear(in_features=2048, out_features=hidden_dim)
 
-        return encoded
+#     def forward(self, x):
+#         features = self.backbone(x)  # (batch_size, 2048, H/32, W/32)
+
+#         # features = features.mean(dim=[2, 3])  # (batch_size, 2048)
+#         # features = self.fc(features)  # (batch_size, hidden_dim)
+#         # features = features.unsqueeze(1)  # (batch_size, 1, hidden_dim)
+#         # features = features.unsqueeze(0)  # (1, batch_size, hidden_dim) ~ (num_pixels, batch_size, hidden_dim)
+#         features = self.conv(features) # (batch, hidden_dim, H/32, W/32)
+#         features = features.flatten(2).permute(2, 0, 1)  # shape: (num_pixels, batch_size, hidden_dim)
+#         features = self.pos_encoder(features)  # shape: (num_pixels, batch_size, hidden_dim)
+#         # Transformer encoder
+#         encoded = self.transformer_encoder(features)  # shape: (num_pixels, batch_size, hidden_dim) 
+#         # encoded = self.transformer_encoder(features)  # (batch_size, 1, hidden_dim)
+#         # encoded = encoded.squeeze(1)  # (batch_size, hidden_dim)
+
+#         # encoded = encoded.permute(1, 0, 2) # (batch_size, num_pixels, hidden_dim) 
+
+#         return encoded
 
 
 class SiameseNetwork(nn.Module):
@@ -300,7 +322,6 @@ class SiameseNetwork(nn.Module):
         self.encoder = encoder
         
     def forward(self, x1, x2):
-        # with torch.no_grad():
         embedding1 = self.encoder(x1)
         embedding2 = self.encoder(x2)
         return torch.mean(embedding1, dim=0), torch.mean(embedding2, dim=0)
@@ -342,9 +363,6 @@ def validate(rank, siamese_net, val_loader, thres=0.55):
             op = torch.zeros_like(score)
             op[score>emb_len*thres] =1
 
-            # print(op.shape, targets.shape)
-            # print(op.eq(targets).sum().item())
-
             correct += op.eq(targets).sum().item()
             total += targets.size(0)
 
@@ -363,6 +381,7 @@ def validate(rank, siamese_net, val_loader, thres=0.55):
 
 def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, running_loss=0):  
     siamese_net.train()
+    prev_valid_loss = torch.zeros(1)
 
     if rank ==0:
         print(('\n' + '%22s' * 4) % ('Device', 'Epoch', 'GPU Mem', 'Loss'))
@@ -376,13 +395,6 @@ def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, runni
         x2 = x2.to(rank, non_blocking=True)
         targets = targets.to(rank, non_blocking=True)
 
-        # if torch.any(torch.isnan(targets)):
-        #     print('**************NAN FOUND in targets**************')
-        # if torch.any(torch.isnan(x1)):
-        #     print('**************NAN FOUND in x1**************')
-        # if torch.any(torch.isnan(x2)):
-        #     print('**************NAN FOUND in x2**************')
-
         optimizer.zero_grad()
         
         # Forward pass
@@ -390,31 +402,37 @@ def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, runni
             embeddings1, embeddings2 = siamese_net(x1, x2)
             loss = contrastive_loss_cosine(embeddings1, embeddings2, targets)
 
+        if torch.any(torch.isnan(embeddings1)) or torch.any(torch.isnan(embeddings2)) or torch.isnan(loss):
+            with open(str(batch_idx)+'ERRORLOG.txt', 'w+') as f:
+                for a in range(len(f1)):
+                    f.write(f'[{f1[a]}, {f2[a]}]')
+                f.write(f'\nAny: {torch.any(torch.isnan(embeddings1))}, {torch.any(torch.isnan(embeddings2))},\
+                    All: {torch.all(torch.isnan(embeddings1))}, {torch.all(torch.isnan(embeddings2))},\
+                    Loss: {loss.item()}, {torch.isnan(loss)}')
+        
         # if torch.isnan(loss):
-        #     print('NAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAN', targets)
-        #     print(torch.any(torch.isnan(embeddings1)), torch.any(torch.isnan(embeddings2)))
-
-
+        #     loss = prev_valid_loss
+        # else:
+        #     prev_valid_loss = loss
+            
         # Backward pass and optimization
-        # use the scaler to scale the loss and perform the backward pass in mixed precision
-        # scaler.scale(loss).backward()
         loss.backward()
-        # torch.nn.utils.clip_grad_norm_(siamese_net.parameters(), max_norm=1)
-
-        # unscale the optimizer's gradients and perform the optimization step
-        # scaler.step(optimizer)
+        
+        torch.nn.utils.clip_grad_value_(siamese_net.parameters(), 2)
+        # grads = [p.grad.detach().flatten() for p in siamese_net.parameters() if p.grad is not None]
+        # print('\nafter clip', torch.max(grads), torch.min(grads))
         optimizer.step()
         
-        # update the scaler for the next iteration
-        # scaler.update()
-
         running_loss = running_loss+loss.item()
 
 
         if rank==0:
-            # print statistics
-            mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-            pbar.set_description(('%22s'*3 + '%22.4g' * 1) % (f'{rank}', f'{epoch}/{epochs - 1}', mem, running_loss/(batch_idx+1)))
+            try:
+                # print statistics
+                mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
+                pbar.set_description(('%22s'*3 + '%22.4g' * 1) % (f'{rank}', f'{epoch}/{epochs - 1}', mem, running_loss/(batch_idx+1)))
+            except:
+                pass
 
 
 def tx():
@@ -446,7 +464,7 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
     setup(rank, world_size)
 
 
-    num_epochs = 152
+    num_epochs = 2
     batch_size = 64 #// world_size
     
     tx_dict = tx()
@@ -460,14 +478,14 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
                                         batch_size=batch_size)
 
     # create model and optimizer
-    encoder = DETREncoder(hidden_dim=256, num_layers=6, nhead=8)
+    encoder = Encoder(hidden_dim=256, num_encoder_layers=6, nheads=8)
     siamese_net = SiameseNetwork(encoder).to(rank)
 
     # Wrap the model with DistributedDataParallel
-    siamese_net = DDP(siamese_net, device_ids=[rank], find_unused_parameters=True)
+    siamese_net = DDP(siamese_net, device_ids=[rank], find_unused_parameters=False)
 
-    optimizer = torch.optim.Adam(siamese_net.parameters(), lr=0.0001)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.001)
+    optimizer = torch.optim.Adam(siamese_net.parameters(), lr=0.001)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
 
 
     best_accuracy = 0
@@ -486,10 +504,7 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
                 .format(start_epoch, ckptfile, best_accuracy))
 
 
-    # initialize the GradScaler object for automatic mixed precision
-    # scaler = GradScaler()
     # Train the network
-
     for epoch in range(start_epoch, num_epochs):
         train_sampler.set_epoch(epoch)
         train_epoch(rank, siamese_net, optimizer, train_loader, epoch, num_epochs, running_loss=0)
@@ -502,6 +517,7 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
 
             if acc>=best_accuracy:
                 best_accuracy = acc
+                # save_path = root + 'epoch' + str(epoch) + 'best_pretrainer.pth'
                 save_path = root + 'best_pretrainer.pth'
             else:
                 save_path = root + 'last_pretrainer.pth'
@@ -519,8 +535,8 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
     cleanup()            
 
 
-__all__ = ['pretrainer', 'train_epoch', 'SiameseDataset', 'PositionalEncoding', 'DETREncoder', 
-'SiameseNetwork', 'contrastive_loss_cosine', 'validate', 'tx', 'get_dataset', 'setup', 'cleanup']
+__all__ = ['pretrainer', 'train_epoch', 'SiameseDataset', 'Encoder', 'SiameseNetwork', 'contrastive_loss_cosine', 
+'validate', 'tx', 'get_dataset', 'setup', 'cleanup']
 
 if __name__ == '__main__':
     # devices = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -534,6 +550,6 @@ if __name__ == '__main__':
 
     # ddp
     world_size = 2
-    mp.spawn(pretrainer, args=(world_size, root, dataroot, ['train2', 'val2'], 'best_pretrainer'), nprocs=world_size, join=True)
+    mp.spawn(pretrainer, args=(world_size, root, dataroot, ['train2', 'val2'], False), nprocs=world_size, join=True)
 
     # pretrain(devices, device_ids, root, dataroot)

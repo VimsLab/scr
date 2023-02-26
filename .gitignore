@@ -28,6 +28,7 @@ runs/*
 data/*
 yolov5/*
 pickle/*
+sample_pkl/*
 data/images/*
 !data/*.yaml
 !data/hyps

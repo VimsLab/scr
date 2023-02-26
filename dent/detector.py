@@ -7,6 +7,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
+import torch.multiprocessing as mp
 import torchvision.transforms as transforms
 
 from PIL import Image
@@ -15,6 +16,7 @@ from tqdm import tqdm
 from pathlib import Path
 from torch.nn.parallel import DataParallel
 from torch.utils.data import Dataset, DataLoader
+from scipy.optimize import linear_sum_assignment
 from torchvision.models import resnet50, ResNet50_Weights
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -41,6 +43,12 @@ def setup(rank, world_size):
 
 def cleanup():
     dist.destroy_process_group()
+
+
+def printer(vals, names):
+	print('\n')
+	for val, name in zip(vals, names):
+		print(f'{name}: {val.shape}')
 
 
 def calculate_metrics(outputs, targets):
@@ -84,73 +92,136 @@ def calculate_metrics(outputs, targets):
 	
 	return precision, recall, f1, ap_05, ap_095
 
-class MLP(nn.Module):
-	def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
-		super().__init__()
-		layers = []
-		layers.append(nn.Linear(input_dim, hidden_dim))
-		layers.append(nn.ReLU())
-		for i in range(num_layers-2):
-			layers.append(nn.Linear(hidden_dim, hidden_dim))
-			layers.append(nn.ReLU())
-		layers.append(nn.Linear(hidden_dim, output_dim))
-		self.mlp = nn.Sequential(*layers)
-		
-	def forward(self, inputs):
-		return self.mlp(inputs)
-
 
 class ObjDetect(nn.Module):
-	def __init__(self, embedding, num_classes, hidden_dim, num_decoder_layers=3, nheads=8):
-		super().__init__()
-		self.embedding = embedding
-		self.position_enc = embedding.pos_encoder
+    def __init__(self, encoder_embedding, hidden_dim=256, num_queries=100, num_decoder_layers=6):
+        super(DETRDecoder, self).__init__()
 
-		# Transformer decoder
-		self.transformer_decoder = nn.TransformerDecoder(
-			nn.TransformerDecoderLayer(d_model=hidden_dim, nhead=nheads),
-			num_layers=num_decoder_layers,
-		)
+        self.encoder_embedding = encoder_embedding        
+        self.num_queries = num_queries
+        self.hidden_dim = hidden_dim
+        self.num_decoder_layers = num_decoder_layers
+        
+        self.transformer_layers = nn.ModuleList([
+            nn.TransformerDecoderLayer(hidden_dim, nhead=8)
+            for i in range(num_decoder_layers)
+        ])
+        
+        self.transformer_decoder = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(hidden_dim, nhead=8),
+            num_layers=num_decoder_layers
+        )
+        
+        self.class_embed = nn.Linear(hidden_dim, num_queries)
+        self.bbox_embed = nn.Linear(hidden_dim, 4 * num_queries)
+        
+    def forward(self, inputs, dec_seq_len):
+        # Pad the memory tensor to match the sequence length of the decoder
+        memory = self.encoder_embedding(inputs)
+        printer([inputs, memory], ['Input image', 'Encoder output'])
+        memory = nn.functional.pad(memory, (0, 0, 0, dec_seq_len - memory.shape[0]))
+        
+        # Generate positional encodings for the memory tensor
+        pos_enc = nn.functional.embedding(
+            torch.arange(dec_seq_len, device=memory.device).unsqueeze(1),
+            torch.arange(self.hidden_dim, device=memory.device).unsqueeze(0)
+        )
+        printer([memory, pos_enc], ['Padded Encoder output', 'Position encoding'])
+        pos_enc = pos_enc.repeat(1, memory.shape[1], 1)
+        
+        # Pass the memory tensor through the decoder layers
+        tgt = torch.zeros((self.num_queries, memory.shape[1], self.hidden_dim), device=memory.device)
+        for i in range(self.num_decoder_layers):
+            tgt = self.transformer_layers[i](tgt, memory, pos_enc)
+        output = self.transformer_decoder(tgt, memory, pos_enc)
+        
+        # Generate class and bbox embeddings from the output tensor
+        class_output = self.class_embed(output)
+        bbox_output = self.bbox_embed(output)
+        
+        # Reshape the bbox embeddings into the correct format
+        bbox_outputs = bbox_output.view(-1, self.num_queries, 4)
 
-		# Class embedding and box position embedding
-		self.query_embed = nn.Embedding(num_classes, hidden_dim)
-		# self.box_embed = MLP(backbone_out_channels, hidden_dim, hidden_dim, 3)
 
-		# Output layers
-		self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
-		self.bbox_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 4)
+        printer([pos_enc , tgt, output, class_output, bbox_output, bbox_outputs], 
+			['Position Encoding after repeat', 'Target', 'Decoder output', 'Class prediction', 'Bbox prediction', 'Final bb0x prediction'])
+        
+        return class_output, bbox_outputs
 
-
-	def forward(self, x):
-		# x: image
-
-		# encoded sequence or tgt
-		features = self.position_enc(x)
+# class MLP(nn.Module):
+# 	def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+# 		super().__init__()
+# 		layers = []
+# 		layers.append(nn.Linear(input_dim, hidden_dim))
+# 		layers.append(nn.ReLU())
+# 		for i in range(num_layers-2):
+# 			layers.append(nn.Linear(hidden_dim, hidden_dim))
+# 			layers.append(nn.ReLU())
+# 		layers.append(nn.Linear(hidden_dim, output_dim))
+# 		self.mlp = nn.Sequential(*layers)
 		
-		# encoder output
-		memory = self.embedding(x) # (num_pixels, batch_size, hidden_dim)
-		query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, x.shape[0], 1)  # shape: (num_classes, batch_size, hidden_dim)
-		
-		# target sequence
-		tgt = torch.zeros_like(query_embed)  # shape: (num_classes, batch_size, hidden_dim)
-		
+# 	def forward(self, inputs):
+# 		return self.mlp(inputs)
 
-		hs = self.transformer_decoder(tgt, memory, features, query_embed)  # shape: (num_classes, batch_size, hidden_dim)
+# class ObjDetect(nn.Module):
+# 	def __init__(self, embedding, num_classes, hidden_dim, num_decoder_layers=3, nheads=8, seq_length=64):
+# 		super().__init__()
+# 		self.embedding = embedding
+# 		# self.position_enc = embedding.pos_encoder
+
+# 		# Transformer decoder
+# 		self.transformer_decoder = nn.TransformerDecoder(
+# 			nn.TransformerDecoderLayer(d_model=hidden_dim, nhead=nheads),
+# 			num_layers=num_decoder_layers,
+# 		)
+
+# 		# Class embedding and box position embedding
+# 		self.query_embed = nn.Embedding(seq_length, hidden_dim)
+
+# 		# Output layers
+# 		self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
+# 		self.bbox_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 4)
+
+
+# 	def forward(self, x):
+# 		# x: image
 		
-		# Classification and bbox regression output
-		outputs_class = self.class_embed(hs)
-		outputs_coord = self.bbox_embed(hs).sigmoid()
+# 		# encoder output
+# 		memory = self.embedding(x) # (src_seq_len, batch_size, hidden_dim)
+# 		query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, x.shape[0], 1)  # shape: (tgt_seq_len, batch_size, hidden_dim)
+# 		# print(query_embed.shape)
+		
+# 		# target sequence
+# 		tgt = torch.zeros_like(query_embed)  # shape: (tgt_seq_len, batch_size, hidden_dim)
+# 		# query_embed = self.query_embed.unsqueeze(1).repeat(1, bs, 1)  # query embeddings for each object query
+# 		tgt[:, :, :query_embed.shape[-1]] = query_embed  # add query embeddings to tgt tensor
 
-		# Reshape outputs
-		outputs_class = outputs_class.transpose(1, 2)
-		outputs_coord = outputs_coord.permute(1, 2, 0).reshape(-1, 4)
+# 		tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[0]).to(x.device)
+# 		# memory_mask = nn.Transformer.generate_square_subsequent_mask(memory.shape[0]).to(x.device)
+# 		# print(tgt_mask.shape, memory_mask.shape)
 
-		return outputs_class, outputs_coord
+# 		memory_mask = torch.triu(torch.full((tgt.shape[0], memory.shape[0]), float('-inf'), device=x.device), diagonal=1)
+		
+# 		hs = self.transformer_decoder(tgt, memory, tgt_mask, memory_mask)  # shape: (num_classes, batch_size, hidden_dim)
+		
+# 		# Classification and bbox regression output
+# 		outputs_class = self.class_embed(hs)
+# 		outputs_coord = self.bbox_embed(hs).sigmoid()
+
+# 		printer([x, memory, query_embed, tgt, tgt_mask, memory_mask, hs], 
+# 			['Input image', 'Encoder output', 'Query Embed', 'Target', 'Target mask', 'Memory mask', 'HS'])
+
+# 		# Reshape outputs
+# 		outputs_class = outputs_class.permute(1, 0, 2)
+# 		outputs_coord = outputs_coord.permute(1, 0, 2).reshape(x.shape[0], tgt.shape[0], -1, 4)
+
+
+# 		return outputs_class, outputs_coord
 
 
 def compute_loss(outputs, targets, objthres=0.05):
 	outputs_class, outputs_coord = outputs
-	targets_class, targets_coord = targets
+	targets_class, targets_coord = targets[:,:,:1], targets[:,:,1:]
 
 	# Calculate objectness score
 	objectness = torch.softmax(outputs_class, dim=-1)[:, :, 0]
@@ -161,7 +232,8 @@ def compute_loss(outputs, targets, objthres=0.05):
 	# to find the lowest cost
 	num_classes = outputs_class.shape[-1]
 	cost_matrix = torch.cdist(outputs_coord, targets_coord, p=1)
-	_, col_indices = linear_sum_assignment(cost_matrix.cpu())
+	print(cost_matrix.shape)
+	_, col_indices = linear_sum_assignment(cost_matrix.cpu().detach().numpy())
 	targets_class_mapped = targets_class[col_indices]
 	targets_coord_mapped = targets_coord[col_indices]
 
@@ -289,7 +361,7 @@ def detector_validate(rank, world_size, model, val_loader, device, nc=2):
 def detector(rank, world_size, root, dataroot):
 	setup(rank, world_size)
 	# define the siamese network model
-	encoder = DETREncoder(hidden_dim=256, num_layers=6, nhead=8)
+	encoder = Encoder(hidden_dim=256, num_encoder_layers=6, nheads=8)
 	siamese_net = DataParallel(SiameseNetwork(encoder))
 
 	# load pre-trained weights
@@ -312,7 +384,7 @@ def detector(rank, world_size, root, dataroot):
 	batch_size = 1
 
 	# define detection model
-	model = ObjDetect(embedding=embedding, num_classes=nc, hidden_dim=hidden_dim).to(rank)
+	model = ObjDetect(embedding, hidden_dim=hidden_dim).to(rank)
 	model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
 	# declare optimizer and scheduler
@@ -370,8 +442,6 @@ def get_dataset(rank, world_size,dataroot, task, batch_size, r, space, phases=["
 
 
 if __name__ == '__main__':
-	devices = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-	device_ids = [0, 1]
 
 	root = '/media/jakep/eye/scr/dent/'
 	dataroot = '/media/jakep/eye/scr/pickle/'
@@ -379,4 +449,6 @@ if __name__ == '__main__':
 	# ddp
 	world_size = 1
 	mp.spawn(detector, args=(world_size, root, dataroot), nprocs=world_size, join=True)
+
+
 	

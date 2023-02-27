@@ -402,23 +402,27 @@ def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, runni
             embeddings1, embeddings2 = siamese_net(x1, x2)
             loss = contrastive_loss_cosine(embeddings1, embeddings2, targets)
 
-        if torch.any(torch.isnan(embeddings1)) or torch.any(torch.isnan(embeddings2)) or torch.isnan(loss):
-            with open(str(batch_idx)+'ERRORLOG.txt', 'w+') as f:
-                for a in range(len(f1)):
-                    f.write(f'[{f1[a]}, {f2[a]}]')
-                f.write(f'\nAny: {torch.any(torch.isnan(embeddings1))}, {torch.any(torch.isnan(embeddings2))},\
-                    All: {torch.all(torch.isnan(embeddings1))}, {torch.all(torch.isnan(embeddings2))},\
-                    Loss: {loss.item()}, {torch.isnan(loss)}')
+            if torch.any(torch.isnan(embeddings1)) or torch.any(torch.isnan(embeddings2)) or torch.isnan(loss):
+                with open(str(batch_idx)+'ERRORLOG.txt', 'w+') as f:
+                    for a in range(len(f1)):
+                        f.write(f'[{f1[a]}, {f2[a]}]')
+                    f.write(f'\nAny: {torch.any(torch.isnan(embeddings1))}, {torch.any(torch.isnan(embeddings2))},\
+                        All: {torch.all(torch.isnan(embeddings1))}, {torch.all(torch.isnan(embeddings2))},\
+                        Loss: {loss.item()}, {prev_valid_loss.item()}')
         
-        # if torch.isnan(loss):
-        #     loss = prev_valid_loss
-        # else:
-        #     prev_valid_loss = loss
+                loss = prev_valid_loss
+                
+                print('\nStopping early because NaN encountered. Previous loss was',prev_valid_loss.item())
+                break
+
+            else:
+                prev_valid_loss = loss
+
             
         # Backward pass and optimization
         loss.backward()
         
-        torch.nn.utils.clip_grad_value_(siamese_net.parameters(), 2)
+        torch.nn.utils.clip_grad_value_(siamese_net.parameters(), 1)
         # grads = [p.grad.detach().flatten() for p in siamese_net.parameters() if p.grad is not None]
         # print('\nafter clip', torch.max(grads), torch.min(grads))
         optimizer.step()
@@ -464,7 +468,7 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
     setup(rank, world_size)
 
 
-    num_epochs = 2
+    num_epochs = 152
     batch_size = 64 #// world_size
     
     tx_dict = tx()
@@ -521,8 +525,7 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
                 save_path = root + 'best_pretrainer.pth'
             else:
                 save_path = root + 'last_pretrainer.pth'
-
-            # if rank==0:
+            
             checkpoint = {
                     'epoch': epoch,
                     'model_state_dict': siamese_net.state_dict(),
@@ -530,6 +533,7 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
                     'best_val_acc': best_accuracy,
                 }
             torch.save(checkpoint, save_path)
+            print('\nSaved weights to', save_path)
 
     # Clean up the process group
     cleanup()            

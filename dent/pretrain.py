@@ -48,7 +48,7 @@ def cleanup():
 
 
 class SiameseDataset(Dataset):
-    def __init__(self, root, rank, phase, transform=None, apply_limit= False, lim=100, num_workers=4):
+    def __init__(self, root, rank, phase, transform=None, apply_limit= False, lim=100, percent=1.0, num_workers=2):
         """
         lim: Upper limit of negative examples per image
         """
@@ -73,18 +73,17 @@ class SiameseDataset(Dataset):
             if rank ==0:
                 print(('\n' + '%22s' * 3) % ('Image', 'Positive', 'Negative'))
             
-            pbars = self.get_pbar(n=4)
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            pbars = self.get_pbar(n=num_workers)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
                 # submit tasks to the executor and get futures
                 future1 = executor.submit(self.populate, pbars[0])
                 future2 = executor.submit(self.populate, pbars[1])
-                future3 = executor.submit(self.populate, pbars[2])
-                future4 = executor.submit(self.populate, pbars[3])
+                # future3 = executor.submit(self.populate, pbars[2])
+                # future4 = executor.submit(self.populate, pbars[3])
 
 
                 # wait for all tasks to complete and get results
-                results = [future1.result(), future2.result(), future3.result(), future4.result()]            
+                results = [future1.result(), future2.result()] #, future2.result(), future2.result()]            
 
             # self.negative_pairs = random.sample(self.negative_pairs, min(len(self.negative_pairs), int(2*len(self.positive_pairs))))
             if rank==0:
@@ -106,17 +105,20 @@ class SiameseDataset(Dataset):
                 self.negative_pairs = pickle.load(f)
                 random.shuffle(self.negative_pairs)
 
-        if rank==0:
-            print(f'{phase} dataset has {len(self.positive_pairs)} positive pairs and {len(self.negative_pairs)} Negative pairs.')
-            print(f'Ratio of negative to positive samples = {len(self.negative_pairs)/len(self.positive_pairs)}')
-
         if apply_limit:
             self.limiter(n=lim, save=neg_file)
 
 
+        self.positive_pairs = random.sample(self.positive_pairs, int(len(self.positive_pairs)*percent)) 
+        self.negative_pairs = random.sample(self.negative_pairs, int(len(self.negative_pairs)*percent))
         self.all_pairs = self.positive_pairs + self.negative_pairs
         random.shuffle(self.all_pairs)
-    
+
+        if rank==0:
+            print(f'{phase} dataset has {len(self.positive_pairs)} positive pairs and {len(self.negative_pairs)} Negative pairs.')
+            print(f'Ratio of negative to positive samples = {len(self.negative_pairs)/len(self.positive_pairs)}')
+
+       
 
     def limiter(self, n=100, save=False):
         # selects 'n' companions for every unique member of self.negative pairs 
@@ -268,6 +270,7 @@ class Encoder(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nheads, dropout=dropout_rate)
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
         
+
     def forward(self, inputs):
         # Get the features from the backbone
         features = self.backbone(inputs)
@@ -341,15 +344,53 @@ def contrastive_loss_cosine(embedding1, embedding2, similarity_label, margin=0.5
     loss = (1 - similarity_label) * 0.5 * cosine_distance**2 + similarity_label * 0.5 * torch.clamp(margin - cosine_distance, min=0)**2
     return loss.mean()
 
+def focal_loss(inputs, target, gamma=2, reduction='mean'):
+    alpha = get_alpha(target)
+    ce_loss = F.binary_cross_entropy_with_logits(inputs, target.float(), reduction='none')
+    pt = torch.exp(-ce_loss)
+    focal_loss = (1 - pt) ** gamma * ce_loss
+    if alpha is not None:
+        assert alpha.shape == target.shape
+        alpha = alpha.to(device=inputs.device)
+        focal_loss = alpha * focal_loss
+    if reduction == 'mean':
+        return torch.mean(focal_loss)
+    elif reduction == 'sum':
+        return torch.sum(focal_loss)
+    else:
+        return focal_loss
+
+
+def contrastive_focal_loss(emb1, emb2, target, margin=1.0, gamma=1.5):
+    distance = F.pairwise_distance(emb1, emb2)
+    loss = target * distance ** 2 + (1 - target) * F.relu(margin - distance) ** 2
+    loss = focal_loss(loss, target, gamma=gamma)
+    return loss
+
+
+
+def get_alpha(targets):
+    n_pos = targets.sum()
+    n_neg = (1 - targets).sum()
+    alpha_ = torch.tensor([n_neg / (n_pos + n_neg), n_pos / (n_pos + n_neg)])
+    alpha = torch.ones_like(targets).float()
+    # alpha = alpha_
+    alpha[targets==0] = alpha_[0]
+    alpha[targets==1] = alpha_[1]
+    return alpha
+
+
 
 def validate(rank, siamese_net, val_loader, thres=0.55):
     siamese_net.eval()
     with torch.no_grad():
         total_loss = 0 
-        correct = 0
+        corrects = 0
+        tps = 0
+        tns = 0
         total = 0
 
-        print(('\n' + '%22s' * 4) % ('Device', 'Correct', 'Accuracy', 'Loss'))
+        print(('\n' + '%22s' * 6) % ('Device', 'Correct', 'TP', 'TN', 'Accuracy', 'Loss'))
         pbar = tqdm(enumerate(val_loader), total=len(val_loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
 
         for batch_idx, (x1, x2, f1, f2, targets) in pbar:
@@ -359,27 +400,38 @@ def validate(rank, siamese_net, val_loader, thres=0.55):
 
             # Forward pass
             embeddings1, embeddings2 = siamese_net(x1, x2)
-            loss = contrastive_loss_cosine(embeddings1, embeddings2, targets)
 
-            # calculate accuracy
-            pred = (torch.sign(embeddings1 - embeddings2) + 1) / 2  # convert to binary predictions
-            emb_len = pred.shape[-1]
-            score = torch.sum(pred,dim=-1)
-            op = torch.zeros_like(score)
-            op[score>emb_len*thres] =1
+            loss = contrastive_focal_loss(embeddings1, embeddings2, targets)
 
-            correct += op.eq(targets).sum().item()
+            # distance between the embeddings for each batch (score)
+            dist = torch.norm((embeddings1-embeddings2), 2, dim=-1)
+            threshold = torch.ones_like(dist)*thres
+            # if dist < threshold op = 1 else op = 0
+            op = torch.relu(torch.sign(threshold-dist))
+
+            correct = op.eq(targets)
+            tp = correct[op==1].sum().item()
+            tn = correct[op==0].sum().item()
+
+            correct = correct.sum().item()
+            tps += tp
+            tns += tn
             total += targets.size(0)
+            corrects += correct 
 
             # accumulate loss
             total_loss += loss.item()
 
-            pbar.set_description(('%22s'*2 +'%22.4g' * 2) % (f'{rank}', f'{correct}/{total}', correct/total, total_loss/(batch_idx+1)))
+            pbar.set_description(('%22s'*4 +'%22.4g' * 2) % (rank, correct, tp, tn, correct/total, loss.item()))
 
 
         # calculate average loss and accuracy
         avg_loss = total_loss / len(val_loader)
-        accuracy = correct / total
+        accuracy = corrects / total
+
+    print(('\n'+ '%22s') % ('Validation stats:'))
+    print(('%22s' * 6) % ('Total', 'TP', 'TN', 'Incorrect', 'avg_acc', 'avg_loss'))
+    print(('%22s' * 4 + "%22.4g"*2) % (total, f'{tps}/{corrects}', f'{tns}/{corrects}', total-correct, accuracy, avg_loss))
 
     return avg_loss, accuracy
 
@@ -405,25 +457,9 @@ def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, runni
         # Forward pass
         with autocast():
             embeddings1, embeddings2 = siamese_net(x1, x2)
-            loss = contrastive_loss_cosine(embeddings1, embeddings2, targets)
+            loss = contrastive_focal_loss(embeddings1, embeddings2, targets)
+            # loss = contrastive_loss_cosine(embeddings1, embeddings2, targets)
 
-            # if torch.any(torch.isnan(embeddings1)) or torch.any(torch.isnan(embeddings2)) or torch.isnan(loss):
-            #     with open(str(epoch) + '_'+str(batch_idx)+'ERRORLOG.txt', 'w+') as f:
-            #         for a in range(len(f1)):
-            #             f.write(f'[{f1[a]}, {f2[a]}]')
-            #         f.write(f'\nAny: {torch.any(torch.isnan(embeddings1))}, {torch.any(torch.isnan(embeddings2))},\
-            #             All: {torch.all(torch.isnan(embeddings1))}, {torch.all(torch.isnan(embeddings2))},\
-            #             Loss: {loss.item()}, {prev_valid_loss.item()}')
-        
-            #     loss = prev_valid_loss
-                
-            #     print('\nStopping early because NaN encountered. Previous loss was',prev_valid_loss.item())
-            #     dist.barrier()
-            #     break
-
-            # else:
-            #     prev_valid_loss = loss
-            
         # Backward pass and optimization
         loss.backward()
         
@@ -462,20 +498,21 @@ def tx():
     return tx_dict
 
 
-def get_dataset(world_size, rank, dataroot, phase, lim, transform, batch_size=64, shuffle=False, num_workers=8):
+def get_dataset(world_size, rank, dataroot, phase, lim, transform, batch_size=64, percent=1.0, shuffle=False, num_workers=8):
 
-
-    dataset = SiameseDataset(dataroot, rank, phase, transform,lim=lim)
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
+    dataset = SiameseDataset(dataroot, rank, phase, transform, lim=lim, percent=percent)
+    if world_size>0:
+        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
+    else:
+        sampler=None
 
     dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, shuffle=shuffle, num_workers=num_workers, pin_memory=True)
     return dataloader, sampler
 
 
+
 def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], resume=False):
-
     setup(rank, world_size)
-
 
     num_epochs = 152
     batch_size = 128 #// world_size
@@ -484,7 +521,7 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
     train_loader, train_sampler = get_dataset(world_size, rank, dataroot, 
                                             phase=phases[0], lim=100, 
                                             transform=tx_dict['train'], 
-                                            batch_size=batch_size)
+                                            batch_size=batch_size, percent=0.1)
     val_loader, val_sampler = get_dataset(world_size, rank, dataroot, 
                                         phase=phases[1], lim=50, 
                                         transform=tx_dict['val'], 
@@ -550,8 +587,8 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
     cleanup()            
 
 
-__all__ = ['pretrainer', 'train_epoch', 'SiameseDataset', 'Encoder', 'SiameseNetwork', 'contrastive_loss_cosine', 
-'validate', 'tx', 'get_dataset', 'setup', 'cleanup']
+__all__ = ['pretrainer', 'train_epoch', 'SiameseDataset', 'Encoder', 'SiameseNetwork', 'contrastive_loss_cosine', 'contrastive_focal_loss',
+           'focal_loss', 'validate', 'tx', 'get_dataset', 'setup', 'cleanup']
 
 if __name__ == '__main__':
     # devices = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')

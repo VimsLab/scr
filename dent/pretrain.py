@@ -28,6 +28,8 @@ TQDM_BAR_FORMAT = '{l_bar}{bar:10}{r_bar}'  # tqdm bar format
 os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
 
+
+
 def setup(rank, world_size):
     # Initialize the process group
     dist.init_process_group(
@@ -247,7 +249,10 @@ class Encoder(nn.Module):
     def __init__(self, hidden_dim=256, nheads=8, num_encoder_layers=6, dropout_rate=0.1):
         super().__init__()
         backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
-        self.backbone = nn.Sequential(*list(backbone.children())[:-2])
+        backbone = nn.Sequential(*list(backbone.children())[:-2])
+        for i in backbone.parameters():
+            i.requires_grad=False
+        self.backbone = backbone
         self.hidden_dim = hidden_dim
         self.nheads = nheads
         self.num_encoder_layers = num_encoder_layers
@@ -384,7 +389,7 @@ def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, runni
     prev_valid_loss = torch.zeros(1)
 
     if rank ==0:
-        print(('\n' + '%22s' * 4) % ('Device', 'Epoch', 'GPU Mem', 'Loss'))
+        print(('\n' + '%22s' * 6) % ('Device', 'Epoch', 'GPU Mem', 'E1minmax', 'E2minmax','Loss'))
 
     pbar = tqdm(enumerate(train_loader), total=len(train_loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:+10b}')
     # with torch.autograd.detect_anomaly():
@@ -402,22 +407,22 @@ def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, runni
             embeddings1, embeddings2 = siamese_net(x1, x2)
             loss = contrastive_loss_cosine(embeddings1, embeddings2, targets)
 
-            if torch.any(torch.isnan(embeddings1)) or torch.any(torch.isnan(embeddings2)) or torch.isnan(loss):
-                with open(str(batch_idx)+'ERRORLOG.txt', 'w+') as f:
-                    for a in range(len(f1)):
-                        f.write(f'[{f1[a]}, {f2[a]}]')
-                    f.write(f'\nAny: {torch.any(torch.isnan(embeddings1))}, {torch.any(torch.isnan(embeddings2))},\
-                        All: {torch.all(torch.isnan(embeddings1))}, {torch.all(torch.isnan(embeddings2))},\
-                        Loss: {loss.item()}, {prev_valid_loss.item()}')
+            # if torch.any(torch.isnan(embeddings1)) or torch.any(torch.isnan(embeddings2)) or torch.isnan(loss):
+            #     with open(str(epoch) + '_'+str(batch_idx)+'ERRORLOG.txt', 'w+') as f:
+            #         for a in range(len(f1)):
+            #             f.write(f'[{f1[a]}, {f2[a]}]')
+            #         f.write(f'\nAny: {torch.any(torch.isnan(embeddings1))}, {torch.any(torch.isnan(embeddings2))},\
+            #             All: {torch.all(torch.isnan(embeddings1))}, {torch.all(torch.isnan(embeddings2))},\
+            #             Loss: {loss.item()}, {prev_valid_loss.item()}')
         
-                loss = prev_valid_loss
+            #     loss = prev_valid_loss
                 
-                print('\nStopping early because NaN encountered. Previous loss was',prev_valid_loss.item())
-                break
+            #     print('\nStopping early because NaN encountered. Previous loss was',prev_valid_loss.item())
+            #     dist.barrier()
+            #     break
 
-            else:
-                prev_valid_loss = loss
-
+            # else:
+            #     prev_valid_loss = loss
             
         # Backward pass and optimization
         loss.backward()
@@ -426,17 +431,21 @@ def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, runni
         # grads = [p.grad.detach().flatten() for p in siamese_net.parameters() if p.grad is not None]
         # print('\nafter clip', torch.max(grads), torch.min(grads))
         optimizer.step()
+        torch.cuda.empty_cache()
         
         running_loss = running_loss+loss.item()
 
 
         if rank==0:
-            try:
-                # print statistics
-                mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%22s'*3 + '%22.4g' * 1) % (f'{rank}', f'{epoch}/{epochs - 1}', mem, running_loss/(batch_idx+1)))
-            except:
-                pass
+            # try:
+            # print statistics
+            minmaxe1 = f'({torch.min(embeddings1).item():.4g}, {torch.max(embeddings1).item():.4g})'
+            minmaxe2 = f'({torch.min(embeddings2).item():.4g}, {torch.max(embeddings2).item():.4g})'
+            mem = f'{torch.cuda.max_memory_allocated() / (1024 ** 3) if torch.cuda.is_available() else 0:.3g}G'  # (GB)
+            pbar.set_description(('%22s'*5 + '%22.4g') % 
+                (f'{rank}', f'{epoch}/{epochs - 1}', mem, minmaxe1, minmaxe2, running_loss/(batch_idx+1)))
+            # except:
+            #     pass
 
 
 def tx():
@@ -469,7 +478,7 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
 
 
     num_epochs = 152
-    batch_size = 64 #// world_size
+    batch_size = 128 #// world_size
     
     tx_dict = tx()
     train_loader, train_sampler = get_dataset(world_size, rank, dataroot, 
@@ -483,14 +492,15 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
 
     # create model and optimizer
     encoder = Encoder(hidden_dim=256, num_encoder_layers=6, nheads=8)
+
     siamese_net = SiameseNetwork(encoder).to(rank)
+
 
     # Wrap the model with DistributedDataParallel
     siamese_net = DDP(siamese_net, device_ids=[rank], find_unused_parameters=False)
 
-    optimizer = torch.optim.Adam(siamese_net.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(siamese_net.parameters(), lr=0.0001)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
-
 
     best_accuracy = 0
     start_epoch = 0
@@ -534,6 +544,7 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
                 }
             torch.save(checkpoint, save_path)
             print('\nSaved weights to', save_path)
+
 
     # Clean up the process group
     cleanup()            

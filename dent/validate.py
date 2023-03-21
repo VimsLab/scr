@@ -5,6 +5,7 @@ import pdb
 import torch
 import pickle
 import random
+import argparse
 import datetime
 import numpy as np
 import torch.nn as nn
@@ -180,12 +181,22 @@ def cleanup():
 
 
 
-def validate(rank, world_size, file, dataroot):
+def validate(rank, world_size, opt):
 	setup(rank, world_size)
-	batch_size = 16
-	nc=2
-	r=3
-	space=1
+	# batch_size = 16
+	# nc=2
+	# r=3
+	# space=1
+
+	batch_size = opt.batch 
+	nc = opt.nc
+	r = opt.r 
+	space = opt.space
+
+	dataroot = opt.dataroot
+	root = opt.root 
+
+	weights = opt.weights
 
 	val_dataset = get_dataset(rank, world_size, dataroot, 'val2', batch_size, r, space)
 	
@@ -195,7 +206,7 @@ def validate(rank, world_size, file, dataroot):
 
 	val_loader = get_loader(val_dataset, batch_size)
 
-	ckptfile = file + '.pth'
+	ckptfile = root + weights + '.pth'
 	ckpts = torch.load(ckptfile, map_location='cpu')
 	model.load_state_dict(ckpts['model_state_dict'])
 	best_accuracy = ckpts['best_val_acc']
@@ -207,13 +218,24 @@ def validate(rank, world_size, file, dataroot):
 
 
 
-if __name__=='__main__':
-	root = '/media/jakep/eye/scr/dent/'
-	dataroot = '/media/jakep/eye/scr/pickle/'
-	file = root + 'outputs/detection_21'
-	world_size = 1
-	mp.spawn(validate, args=(world_size, file, dataroot), nprocs=world_size, join=True)
 
-	
+def arg_parse():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--root', type=str, default='/media/jakep/eye/scr/dent/', help='project root path')
+    parser.add_argument('--dataroot', type=str, default='/media/jakep/eye/scr/pickle/', help='path to pickled dataset')
+    parser.add_argument('--world_size', type=int, default=1, help='World size')
+    parser.add_argument('--weights', type=str, default='outputs/detection_21', help='path to trained weights')
+    
+    parser.add_argument('--nc', type=int, default=2, help='number of classes')
+    parser.add_argument('--r', type=int, default=3, help='number of adjacent images to stack')
+    parser.add_argument('--space', type=int, default=1, help='Number of steps/ stride for next adjacent image block')
+    parser.add_argument('--batch', type=int, default=16, help='validation batch size')
+
+    return parser.parse_args()
 
 
+
+if __name__ == '__main__':
+
+	opt = arg_parse()
+	mp.spawn(validate, args=(opt.world_size, opt), nprocs=opt.world_size, join=True)

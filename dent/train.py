@@ -5,6 +5,7 @@ import pdb
 import torch
 import pickle
 import random
+import argparse
 import datetime
 import numpy as np
 import torch.nn as nn
@@ -151,15 +152,31 @@ def train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion, 
 	return model
 
 
-def detector(rank, world_size, root, dataroot, pretraining=False, pretrained_weights_path='best_pretrainer.pth', resume=False):
+# def detector(rank, world_size, root, dataroot, pretraining=False, pretrained_weights_path='best_pretrainer.pth', resume=False):
+def detector(rank, world_size, opt):
 	setup(rank, world_size)
 	# trainig params
-	nc = 2
-	epochs = 152
-	r = 3
-	space = 1
-	batch_size = 16
-	val_batch_size = 16
+	# nc = 2
+	# epochs = 152
+	# r = 3
+	# space = 1
+	# batch_size = 16
+	# val_batch_size = 16
+
+	nc = opt.nc
+	epochs = opt.epochs
+	r = opt.r
+	space = opt.space
+	batch_size = opt.train_batch
+	val_batch_size = opt.val_batch
+
+	dataroot = opt.dataroot
+	root = opt.root
+
+	pretraining = opt.pretrain 
+	pretrained_weights_path = opt.pretrain_weights
+
+	resume = opt.resume
 
 	# if rank>-1:
 	train_data = get_dataset(rank, world_size, dataroot, 'val2', batch_size, r, space)
@@ -221,11 +238,33 @@ def detector(rank, world_size, root, dataroot, pretraining=False, pretrained_wei
 		
 
 
+def arg_parse():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--root', type=str, default='/media/jakep/eye/scr/dent/', help='project root path')
+    parser.add_argument('--dataroot', type=str, default='/media/jakep/eye/scr/pickle/', help='path to pickled dataset')
+    parser.add_argument('--world_size', type=int, default=2, help='World size')
+    parser.add_argument('--resume', type=str, default='False', help='path to trained weights or "False"')
+    parser.add_argument('--pretrain', type=bool, default=True, help='Begin with pretrained weights or not. Must provide path if yes.')
+    parser.add_argument('--pretrain_weights', type=str, default='best_pretrainer.pth', help='path to pretrained weights. --pretrain must be true')
+    
+    parser.add_argument('--nc', type=int, default=2, help='number of classes')
+    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train')
+    parser.add_argument('--r', type=int, default=3, help='number of adjacent images to stack')
+    parser.add_argument('--space', type=int, default=1, help='Number of steps/ stride for next adjacent image block')
+    parser.add_argument('--train_batch', type=int, default=64, help='training batch size')
+    parser.add_argument('--val_batch', type=int, default=16, help='validation batch size')
+
+    return parser.parse_args()
+
+
+
 if __name__ == '__main__':
 
-	root = '/media/jakep/eye/scr/dent/'
-	dataroot = '/media/jakep/eye/scr/pickle/'
+	opt = arg_parse()
 
-	# ddp
-	world_size = 2
-	mp.spawn(detector, args=(world_size, root, dataroot), nprocs=world_size, join=True)
+	# root = '/media/jakep/eye/scr/dent/'
+	# dataroot = '/media/jakep/eye/scr/pickle/'
+
+	# # ddp
+	# world_size = 2
+	mp.spawn(detector, args=(opt.world_size, opt), nprocs=opt.world_size, join=True)

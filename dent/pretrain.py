@@ -4,6 +4,7 @@ import math
 import torch
 import pickle
 import random
+import argparse
 import numpy as np
 import torch.nn as nn
 import concurrent.futures
@@ -490,11 +491,18 @@ def get_dataset(world_size, rank, dataroot, phase, lim, transform, apply_limit=F
 
 
 
-def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], resume=False):
+def pretrainer(rank, world_size, opt):
     setup(rank, world_size)
 
-    num_epochs = 152
-    batch_size = 64 #// world_size
+    # num_epochs = 152
+    # batch_size = 64 #// world_size
+
+    num_epochs = opt.epochs
+    batch_size = opt.train_batch 
+    root = opt.root 
+    dataroot = opt.dataroot 
+    phases = [opt.train_folder, opt.val_folder]
+    resume = opt.resume
     
     tx_dict = tx()
     train_loader, train_sampler = get_dataset(world_size, rank, dataroot, 
@@ -569,19 +577,33 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
 __all__ = ['pretrainer', 'train_epoch', 'SiameseDataset', 'Encoder', 'SiameseNetwork', 'contrastive_loss_cosine', 'contrastive_focal_loss',
            'validate', 'tx', 'get_dataset', 'setup', 'cleanup']
 
+
+
+def arg_parse():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--root', type=str, default='/media/jakep/eye/scr/dent/', help='project root path')
+    parser.add_argument('--dataroot', type=str, default='/media/jakep/eye/scr/pickle/', help='path to pickled dataset')
+    parser.add_argument('--world_size', type=int, default=2, help='World size')
+    parser.add_argument('--resume', type=str, default=False, help='path to trained weights or "False"')
+    parser.add_argument('--train_folder', type=str, default='train2', help='name of the directory containing training samples')
+    parser.add_argument('--val_folder', type=str, default='val2', help='name of the directory containing validation samples')
+    
+    parser.add_argument('--nc', type=int, default=2, help='number of classes')
+    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train')
+    parser.add_argument('--train_batch', type=int, default=64, help='training batch size')
+    parser.add_argument('--val_batch', type=int, default=16, help='validation batch size')
+
+    return parser.parse_args()
+
+
+
 if __name__ == '__main__':
 
-    root = '/media/jakep/eye/scr/dent/'
-    dataroot = '../pickle/'
+    opt = arg_parse()
 
+    # root = '/media/jakep/eye/scr/dent/'
+    # dataroot = '/media/jakep/eye/scr/pickle/'
 
-    # train_loader, train_sampler = get_dataset(0, 0, dataroot, 
-    #                                         phase='train2', lim=100, 
-    #                                         batch_size=1, percent=0.01, transform=None)
-    val_loader, val_sampler = get_dataset(0, 0, dataroot, 
-                                        phase='val2', lim=8, apply_limit=False,
-                                        batch_size=1, transform=None)
-
-    # ddp
-    world_size = 2
-    mp.spawn(pretrainer, args=(world_size, root, dataroot, ['train2', 'val2'], False), nprocs=world_size, join=True)
+    # # ddp
+    # world_size = 2
+    mp.spawn(pretrainer, args=(opt.world_size, opt), nprocs=opt.world_size, join=True)

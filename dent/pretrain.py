@@ -586,12 +586,9 @@ def arg_parse():
     parser.add_argument('--world_size', type=int, default=2, help='World size')
     parser.add_argument('--resume', type=str, default=False, help='path to trained weights or "False"')
     parser.add_argument('--train_folder', type=str, default='train2', help='name of the directory containing training samples')
-    parser.add_argument('--val_folder', type=str, default='val2', help='name of the directory containing validation samples')
-    
-    parser.add_argument('--nc', type=int, default=2, help='number of classes')
+    parser.add_argument('--val_folder', type=str, default='val2', help='name of the directory containing validation samples')    
     parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train')
-    parser.add_argument('--train_batch', type=int, default=64, help='training batch size')
-    parser.add_argument('--val_batch', type=int, default=16, help='validation batch size')
+    parser.add_argument('--batch_size', type=int, default=64, help='batch size')
 
     return parser.parse_args()
 

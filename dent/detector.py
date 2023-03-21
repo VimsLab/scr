@@ -1,8 +1,11 @@
 import os
 import re
+import gc
+import pdb
 import torch
 import pickle
 import random
+import datetime
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,32 +20,44 @@ from pathlib import Path
 from torch.nn.parallel import DataParallel
 from torch.utils.data import Dataset, DataLoader
 from scipy.optimize import linear_sum_assignment
+from torchvision.ops import complete_box_iou_loss
 from torchvision.models import resnet50, ResNet50_Weights
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from sklearn.metrics import precision_recall_curve, average_precision_score, f1_score
 
 from pretrain import *
-from utils.dataloader import create_dataloader
+from utils.plots import plot_images
+from utils.dl import create_dataloader
+from matching_loss import build_matcher
+from utils.general import xywh2xyxy, xyxy2xywh
+from loss_criterion import *
+from validate import detector_validate
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1'
 os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
+# os.environ['NCCL_DEBUG']='INFO'
+
+
+
 
 def setup(rank, world_size):
-    # Initialize the process group
-    dist.init_process_group(
-        backend="nccl",
-        init_method="tcp://127.0.0.1:12526",
-        rank=rank,
-        world_size=world_size
-    )
-
-    # Set the GPU to use
-    torch.cuda.set_device(rank)
+	# Initialize the process group
+	dist.init_process_group(
+		backend="nccl",
+		init_method="tcp://127.0.0.1:12426",
+		rank=rank,
+		world_size=world_size,
+		timeout=datetime.timedelta(seconds=5000)
+	)
+	# Set the GPU to use
+	torch.cuda.set_device(rank)
 
 
 def cleanup():
-    dist.destroy_process_group()
+
+	dist.destroy_process_group()
+
 
 
 def printer(vals, names):
@@ -51,9 +66,14 @@ def printer(vals, names):
 		print(f'{name}: {val.shape}')
 
 
-def calculate_metrics(outputs, targets):
-	# Get number of classes
-	num_classes = outputs.shape[1]
+
+
+def calculate_metrics(outputs, scores, targets, nc, eps=1e-3):
+	# outputs: M [2]
+	# scores: M [0.6]
+	# targets: M [1]
+
+	num_classes = nc
 	
 	# Calculate precision, recall, and f1 score for each class
 	precision = torch.zeros(num_classes)
@@ -61,194 +81,207 @@ def calculate_metrics(outputs, targets):
 	f1 = torch.zeros(num_classes)
 	ap_05 = torch.zeros(num_classes)
 	ap_095 = torch.zeros(num_classes)
-	
-	# Flatten the outputs and targets
-	# outputs = outputs.flatten()
-	# targets = targets.flatten()
-	
+	cf = torch.zeros((num_classes, 4))
+
+	classes = torch.unique(targets)	
 	# Calculate precision, recall, and f1 score for each class
-	for i in range(num_classes):
-		# Extract predictions and targets for the current class
-		class_outputs = outputs[targets == i]
-		class_targets = targets[targets == i]
-		
-		# Calculate precision and recall
-		tp = torch.sum(class_outputs == i)
-		fp = torch.sum(class_outputs != i)
-		fn = torch.sum(class_targets != i)
-		precision[i] = tp / (tp + fp)
-		recall[i] = tp / (tp + fn)
-		
-		# Calculate f1 score
-		f1[i] = 2 * precision[i] * recall[i] / (precision[i] + recall[i])
-		
-		# Calculate average precision at 0.5 and 0.95
-		precision_values, recall_values, _ = precision_recall_curve(class_targets.cpu(), class_outputs.cpu())
-		ap_05[i] = average_precision_score(class_targets.cpu(), class_outputs.cpu(), average='binary', pos_label=i)
-		ap_095[i] = 0
-		for j in range(len(recall_values)):
-			if recall_values[j] >= 0.95:
-				ap_095[i] = max(ap_095[i], precision_values[j])
+
+	for i in classes:
+		i = i.long()
+		if len(outputs)<1:
+			break
 	
-	return precision, recall, f1, ap_05, ap_095
+		# Extract predictions and targets for the current class
+		tp = torch.sum(torch.logical_and(targets == i, outputs == i)).item()
+		fp = torch.sum(torch.logical_and(targets != i, outputs == i)).item()
+		tn = torch.sum(torch.logical_and(targets != i, outputs != i)).item()
+		fn = torch.sum(torch.logical_and(targets == i, outputs != i)).item()
+
+		# print(i, outputs, scores, targets, torch.logical_and(targets == i, outputs == i), tp, fp, tn, fn)
+		
+		cf[i-1] = torch.tensor([tp,tn,fp,fn])
+		precision[i-1] = tp / (tp + fp+eps)
+		recall[i-1] = tp / (tp + fn+eps)
+
+		# Calculate f1 score
+		f1[i-1] = 2 * precision[i-1] * recall[i-1] / (precision[i-1] + recall[i-1])
+
+		if not torch.any(targets==i):
+			continue
+
+		class_targets = targets[targets==i]
+		class_outputs = scores[targets==i]
+
+		# Calculate average precision at 0.5 and 0.95
+		precision_values, recall_values, _ = precision_recall_curve(class_targets.cpu(), class_outputs.float().cpu(), pos_label=int(i))
+		ap_05[i-1] = average_precision_score(class_targets.cpu(), class_outputs.float().cpu(), average='samples', pos_label=int(i))
+
+	return precision, recall, f1, ap_05, ap_095, cf
+
+
+
+class MLP(nn.Module):
+	def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+		super().__init__()
+		self.num_layers = num_layers
+		h = [hidden_dim] * (num_layers -1)
+		self.layers = nn.ModuleList(nn.Linear(n,k) for n,k in zip([input_dim] +h, h + [output_dim]))
+		
+	def forward(self, x):
+		for i, layer in enumerate(self.layers):
+			x = F.relu(layer(x)) if i<self.num_layers -1 else layer(x)
+		return x
+
 
 
 class ObjDetect(nn.Module):
-    def __init__(self, encoder_embedding, hidden_dim=256, num_queries=100, num_decoder_layers=6):
-        super(DETRDecoder, self).__init__()
+	def __init__(self, encoder_embedding, hidden_dim=256, num_queries=48, num_decoder_layers=6, num_class=2):
+		super().__init__()
 
-        self.encoder_embedding = encoder_embedding        
-        self.num_queries = num_queries
-        self.hidden_dim = hidden_dim
-        self.num_decoder_layers = num_decoder_layers
-        
-        self.transformer_layers = nn.ModuleList([
-            nn.TransformerDecoderLayer(hidden_dim, nhead=8)
-            for i in range(num_decoder_layers)
-        ])
-        
-        self.transformer_decoder = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(hidden_dim, nhead=8),
-            num_layers=num_decoder_layers
-        )
-        
-        self.class_embed = nn.Linear(hidden_dim, num_queries)
-        self.bbox_embed = nn.Linear(hidden_dim, 4 * num_queries)
-        
-    def forward(self, inputs, dec_seq_len):
-        # Pad the memory tensor to match the sequence length of the decoder
-        memory = self.encoder_embedding(inputs)
-        printer([inputs, memory], ['Input image', 'Encoder output'])
-        memory = nn.functional.pad(memory, (0, 0, 0, dec_seq_len - memory.shape[0]))
-        
-        # Generate positional encodings for the memory tensor
-        pos_enc = nn.functional.embedding(
-            torch.arange(dec_seq_len, device=memory.device).unsqueeze(1),
-            torch.arange(self.hidden_dim, device=memory.device).unsqueeze(0)
-        )
-        printer([memory, pos_enc], ['Padded Encoder output', 'Position encoding'])
-        pos_enc = pos_enc.repeat(1, memory.shape[1], 1)
-        
-        # Pass the memory tensor through the decoder layers
-        tgt = torch.zeros((self.num_queries, memory.shape[1], self.hidden_dim), device=memory.device)
-        for i in range(self.num_decoder_layers):
-            tgt = self.transformer_layers[i](tgt, memory, pos_enc)
-        output = self.transformer_decoder(tgt, memory, pos_enc)
-        
-        # Generate class and bbox embeddings from the output tensor
-        class_output = self.class_embed(output)
-        bbox_output = self.bbox_embed(output)
-        
-        # Reshape the bbox embeddings into the correct format
-        bbox_outputs = bbox_output.view(-1, self.num_queries, 4)
-
-
-        printer([pos_enc , tgt, output, class_output, bbox_output, bbox_outputs], 
-			['Position Encoding after repeat', 'Target', 'Decoder output', 'Class prediction', 'Bbox prediction', 'Final bb0x prediction'])
-        
-        return class_output, bbox_outputs
-
-# class MLP(nn.Module):
-# 	def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
-# 		super().__init__()
-# 		layers = []
-# 		layers.append(nn.Linear(input_dim, hidden_dim))
-# 		layers.append(nn.ReLU())
-# 		for i in range(num_layers-2):
-# 			layers.append(nn.Linear(hidden_dim, hidden_dim))
-# 			layers.append(nn.ReLU())
-# 		layers.append(nn.Linear(hidden_dim, output_dim))
-# 		self.mlp = nn.Sequential(*layers)
+		self.encoder_embedding = encoder_embedding        
+		self.num_queries = num_queries
+		self.hidden_dim = hidden_dim
+		self.num_decoder_layers = num_decoder_layers
+		self.num_class = num_class
 		
-# 	def forward(self, inputs):
-# 		return self.mlp(inputs)
-
-# class ObjDetect(nn.Module):
-# 	def __init__(self, embedding, num_classes, hidden_dim, num_decoder_layers=3, nheads=8, seq_length=64):
-# 		super().__init__()
-# 		self.embedding = embedding
-# 		# self.position_enc = embedding.pos_encoder
-
-# 		# Transformer decoder
-# 		self.transformer_decoder = nn.TransformerDecoder(
-# 			nn.TransformerDecoderLayer(d_model=hidden_dim, nhead=nheads),
-# 			num_layers=num_decoder_layers,
-# 		)
-
-# 		# Class embedding and box position embedding
-# 		self.query_embed = nn.Embedding(seq_length, hidden_dim)
-
-# 		# Output layers
-# 		self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
-# 		self.bbox_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 4)
-
-
-# 	def forward(self, x):
-# 		# x: image
+		self.transformer_layers = nn.ModuleList([
+			nn.TransformerDecoderLayer(hidden_dim, nhead=8)
+			for i in range(num_decoder_layers)
+		])
 		
-# 		# encoder output
-# 		memory = self.embedding(x) # (src_seq_len, batch_size, hidden_dim)
-# 		query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, x.shape[0], 1)  # shape: (tgt_seq_len, batch_size, hidden_dim)
-# 		# print(query_embed.shape)
+		self.transformer_decoder = nn.TransformerDecoder(
+			nn.TransformerDecoderLayer(hidden_dim, nhead=8),
+			num_layers=num_decoder_layers
+		)
+
+		self.class_embed = nn.Linear(hidden_dim, num_class+1)
+		self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
 		
-# 		# target sequence
-# 		tgt = torch.zeros_like(query_embed)  # shape: (tgt_seq_len, batch_size, hidden_dim)
-# 		# query_embed = self.query_embed.unsqueeze(1).repeat(1, bs, 1)  # query embeddings for each object query
-# 		tgt[:, :, :query_embed.shape[-1]] = query_embed  # add query embeddings to tgt tensor
 
-# 		tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[0]).to(x.device)
-# 		# memory_mask = nn.Transformer.generate_square_subsequent_mask(memory.shape[0]).to(x.device)
-# 		# print(tgt_mask.shape, memory_mask.shape)
-
-# 		memory_mask = torch.triu(torch.full((tgt.shape[0], memory.shape[0]), float('-inf'), device=x.device), diagonal=1)
 		
-# 		hs = self.transformer_decoder(tgt, memory, tgt_mask, memory_mask)  # shape: (num_classes, batch_size, hidden_dim)
+
+	def forward(self, inputs, dec_seq_len=48):
+
+		memory = self.encoder_embedding(inputs)
+		tgt = torch.zeros((self.num_queries, memory.shape[1], self.hidden_dim), device=memory.device)
+
+		# Generate masks
+		tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[0]).to(memory.device)
+		memory_mask = torch.triu(torch.full((tgt.shape[0], memory.shape[0]), float('-inf'), device=memory.device), diagonal=1)
 		
-# 		# Classification and bbox regression output
-# 		outputs_class = self.class_embed(hs)
-# 		outputs_coord = self.bbox_embed(hs).sigmoid()
+		# Apply decoder layers
+		for i in range(self.num_decoder_layers):
+			tgt = self.transformer_layers[i](tgt, memory, tgt_mask, memory_mask)
+		output = self.transformer_decoder(tgt, memory, tgt_mask, memory_mask)
+		
+		# Generate class and bbox embeddings from the output tensor
+		class_output = self.class_embed(output)
+		bbox_output = self.bbox_embed(output).sigmoid()
+		
+		# Reshape the bbox embeddings into the correct format
+		class_output = class_output.view(-1, self.num_queries, self.num_class+1)
+		bbox_output = bbox_output.view(-1, self.num_queries, 4)
 
-# 		printer([x, memory, query_embed, tgt, tgt_mask, memory_mask, hs], 
-# 			['Input image', 'Encoder output', 'Query Embed', 'Target', 'Target mask', 'Memory mask', 'HS'])
-
-# 		# Reshape outputs
-# 		outputs_class = outputs_class.permute(1, 0, 2)
-# 		outputs_coord = outputs_coord.permute(1, 0, 2).reshape(x.shape[0], tgt.shape[0], -1, 4)
+		# printer([tgt, tgt_mask, memory_mask, output, class_output, bbox_output], 
+		# 	['Target', 'Target Mask', 'Memory mask', 'Decoder output', 'Class prediction', 'Bbox prediction'])
+		class_output = torch.softmax(class_output, dim=-1)
+		return class_output, bbox_output
 
 
-# 		return outputs_class, outputs_coord
+def get_focal_loss(pred, target, gamma=1):
+	# pred contains probaility score for each class
+	alpha = torch.tensor([1, 2.4, 1.8]).to(pred.device)
+
+	ce_loss = nn.CrossEntropyLoss(reduction='none', weight=alpha)(pred.float(), target.long())
+	pt = torch.exp(-ce_loss)
+	focal_loss = (1 - pt) ** gamma * ce_loss
+	return torch.mean(focal_loss)
 
 
-def compute_loss(outputs, targets, objthres=0.05):
+def get_iou_loss(pred, target):
+	iou_loss = complete_box_iou_loss(pred.float(), target.float(), reduction='mean')
+	return iou_loss
+
+
+def compute_loss(outputs, targets, nc=2):
+	criterion,_ = loss_functions(nc, phase='train')
+	criterion.train()
+	
+	loss_dict = criterion(outputs, targets) #.to(outputs.device)
+
+	weight_dict = criterion.weight_dict
+	losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+
+	return losses
+
+
+
+def compute_loss_old(outputs, targets, objthres=0.45, phase='val'):
 	outputs_class, outputs_coord = outputs
-	targets_class, targets_coord = targets[:,:,:1], targets[:,:,1:]
+	targets_class = targets[:,0]
+	targets_coord = targets[:,1:]
+
+	nc = outputs_class.shape[-1]
 
 	# Calculate objectness score
-	objectness = torch.softmax(outputs_class, dim=-1)[:, :, 0]
-	outputs_class = outputs_class[objectness>objthres]
-	outputs_coord = outputs_coord[objectness>objthres]
+	objectness = torch.softmax(outputs_class.flatten(0,1), dim=-1)	
+	indices = torch.argmax(objectness, dim=-1)						# predicted class index [N]
+	topobjectness  = torch.max(objectness, dim=-1)[0]				# highest probability score of the predicted class index [N]
+
+	outputs_class = objectness.view(-1, nc)							# probabilities [Nx3]
+	outputs_coord = outputs_coord.view(-1, 4)
+
+	idx_array = torch.arange(len(objectness))
+
+
+	top_real_objects = topobjectness[topobjectness>objthres]		# probability score of predicted class after filtering low scores [M] [0.6]
+	# real_objects = objectness[topobjectness>objthres]				
+	indices = indices[topobjectness>objthres]						# class indices after filtering [M] [2]
+
+	outputs_class = outputs_class[topobjectness>objthres]			# probability scores of all classes after the filtering [MX3] [0.2,0.2, 0.6]
+	outputs_coord = outputs_coord[topobjectness>objthres]
+
+	idx_array = idx_array[topobjectness>objthres]
 
 	# One-on-one mapping between predictions and targets using Hungarian algorithm
 	# to find the lowest cost
-	num_classes = outputs_class.shape[-1]
-	cost_matrix = torch.cdist(outputs_coord, targets_coord, p=1)
-	print(cost_matrix.shape)
-	_, col_indices = linear_sum_assignment(cost_matrix.cpu().detach().numpy())
-	targets_class_mapped = targets_class[col_indices]
-	targets_coord_mapped = targets_coord[col_indices]
+	cost_matrix = torch.cdist(outputs_coord.unsqueeze(0), targets_coord.unsqueeze(0), p=1).squeeze(0)
+	row_indices, col_indices = linear_sum_assignment(cost_matrix.cpu().detach().numpy())
 
-	# Calculate classification and bounding box regression loss
-	loss_class = F.cross_entropy(outputs_class.view(-1, num_classes), targets_class_mapped.flatten())
-	loss_bbox = F.smooth_l1_loss(outputs_coord, targets_coord_mapped, reduction='sum') / outputs_coord.shape[0]
+	op_class_mapped = outputs_class[row_indices]
+	op_coord_mapped = outputs_coord[row_indices]
+	top_real_objects = top_real_objects[row_indices]
+
+	if len(row_indices)<len(targets_class):
+		n = len(targets_class) - len(row_indices)
+		extra_class = torch.zeros((n,nc)).to(targets_class.device)
+		extra_class[:,0] = 1
+		no_obj = torch.zeros((n)).to(targets_class.device)
+		extra_box = torch.zeros((n, 4)).to(targets_class.device)
+		op_class_mapped = torch.cat([op_class_mapped, extra_class])
+		op_coord_mapped = torch.cat([op_coord_mapped, extra_box])
+		top_real_objects= torch.cat([top_real_objects, no_obj])
+
+	ce = nn.CrossEntropyLoss(reduction='mean')
+	assert len(op_class_mapped)==len(targets_class), f'Lengths dont match'
+	assert len(op_class_mapped)>0,f'empty'
+	
+	loss_class = get_focal_loss(op_class_mapped, targets_class)
+	# loss_bbox = F.smooth_l1_loss(op_coord_mapped.unsqueeze(0), targets_coord.unsqueeze(0), reduction='mean') 
+	loss_bbox = get_iou_loss(op_coord_mapped.unsqueeze(0), targets_coord.unsqueeze(0))
 
 	# Total loss
-	loss = loss_class + loss_bbox
+	if phase=='train':
+		return loss_class + loss_bbox
 
-	return loss, objectness
+	return (loss_class, loss_bbox), (top_real_objects, op_coord_mapped), (indices[row_indices], idx_array[row_indices])
 
 
-def detector_train_epoch(rank, model, optimizer, train_loader, epoch, epochs, running_loss=0):
+
+
+def detector_train_epoch(rank, model, optimizer, train_loader, epoch, epochs, nc, running_loss=0):
 	model.train()
+	gc.collect()
 
 	if rank==0:
 		print(('\n' + '%22s' * 4) % ('Device', 'Epoch', 'GPU Mem', 'Loss'))
@@ -257,187 +290,246 @@ def detector_train_epoch(rank, model, optimizer, train_loader, epoch, epochs, ru
 
 	for batch_idx, (img, targets) in pbar:
 		img = img.to(rank, non_blocking=True)
-		# targets = [{k: v.to(rank) for k, v in t.items()} for t in targets]
-		targets = targets.to(rank, non_blocking=True)
-
+		targets = [t.to(rank, non_blocking=True) for t in targets]
 		optimizer.zero_grad()
-
 		# Forward pass
 		outputs = model(img)
-		loss, _ = compute_loss(outputs, targets)
+		outputs = {'pred_logits':outputs[0], 'pred_boxes': outputs[1]}
+		targets = [{'labels': t[:,0], 'boxes':t[:,1:]} for t in targets]
+
+		# loss = compute_loss(outputs, targets[:,1:], phase='train', objthres=0.001)
+		loss = compute_loss(outputs, targets)
 
 		# Backward pass and optimization
 		loss.backward()
 		optimizer.step()
-
-		# print statistics
 
 		running_loss = running_loss+loss.item()
 
 		if rank==0:
 			mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
 			pbar.set_description(('%22s'*3 + '%22.4g' * 1) % (f'{torch.cuda.current_device()}', f'{epoch}/{epochs - 1}', mem, running_loss/(batch_idx+1)))
+			# if batch_idx<10 and epoch==0:
+			# 	plot_images(img, targets, paths=None, fname=f'images/train_batch_{batch_idx}.jpg')
+		
+	return model
 
 
 
-def detector_validate(rank, world_size, model, val_loader, device, nc=2):
+
+def detector_validate_old(rank, model, val_loader, nc):
 	model.eval()
 	total_loss = 0.0
 	total_correct = 0.0
-	total_pred_boxes = []
-	total_pred_classes = []
-	total_target_boxes = []
-	total_target_classes = []
+	total_incorrect = 0.0
+	total_class_loss = 0.0
+	total_coord_loss = 0.0
+	num_targets = 0
 	metrices = []
+	fours = [] #torch.zeros((nc,4))
 	
 	with torch.no_grad():
 		if rank==0:
-			print(('\n' + '%22s' * 6) % ('Device', 'Correct', 'Accuracy', 'cls_loss', 'coord_loss', 'total_loss'))
+			print(('\n' + '%22s' * 6) % ('Device', 'Correct', 'Incorrect', 'cls_loss', 'coord_loss', 'total_loss'))
 		pbar = tqdm(enumerate(val_loader), total=len(val_loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
 
-		for i, (images, targets) in pbar:
+		for batch_idx, (images, targets) in pbar:
 			images = images.to(rank)
-			targets = [{k: v.to(rank) for k, v in t.items()} for t in targets]
-			
+			targets = targets.to(rank, non_blocking=True)
+
 			# Forward pass
-			outputs_class, outputs_coord = model(images)
+			outputs = model(images)
 
-			num_classes = outputs_class.shape[-1]
-			
-			# Calculate objectness score
-			outputs_obj = outputs_class.softmax(dim=-1)[:, :, :-1]
-			
-			# Flatten outputs and targets
-			outputs_obj_flat = outputs_obj.flatten(0, 1)
-			outputs_coord_flat = outputs_coord.flatten(0, 1)
-			target_boxes_flat = torch.cat([t['boxes'] for t in targets], dim=0)
-			target_classes_flat = torch.cat([t['labels'] for t in targets], dim=0)
-			num_targets = target_classes_flat.shape[0]
+			if len(targets>0):
+				lossthings = compute_loss(outputs, targets[:,1:], phase='val', objthres=0.1)
+				class_loss, coord_loss = lossthings[0]
+				outputs_obj, outputs_coord = lossthings[1]
+				class_index, array_index = lossthings[2]
 
-			# Get metrics
-			val_metrics = calculate_metrics(outputs_obj_flat, target_classes_flat)
-			metrices.append(torch.stack(val_metrics))
-			
-			# Apply one-on-one mapping between predictions and targets
-			cost_matrix = torch.cdist(outputs_coord_flat, target_boxes_flat, p=1)
-			cost_matrix[cost_matrix > 100] = 100 # Set a high cost for invalid matches
-			row_indices, col_indices = linear_sum_assignment(cost_matrix.cpu().numpy())
-			pred_boxes = outputs_coord_flat[row_indices]
-			pred_classes = outputs_obj_flat[row_indices, col_indices]
-			
-			# Calculate validation loss
-			target_obj = F.one_hot(target_classes_flat, num_classes=num_classes.float())
-			target_obj[target_obj.sum(dim=0) == 0] = 1.0 / num_classes # Handle empty classes
-			target_obj = target_obj[:, :-1]
-			class_loss = F.cross_entropy(outputs_obj_flat, target_obj.flatten())
-			coord_loss = F.smooth_l1_loss(outputs_coord_flat, target_boxes_flat)
-			loss = class_loss + coord_loss
-			total_loss += loss.item()
-			
-			# Calculate validation accuracy
-			pred_classes = pred_classes.argmax(dim=-1)
-			total_correct += (pred_classes == target_classes_flat[row_indices]).sum().item()
-			
-			# Save predictions and targets for visualization
-			total_pred_boxes.append(pred_boxes.cpu())
-			total_pred_classes.append(pred_classes.cpu())
-			total_target_boxes.append(target_boxes_flat.cpu())
-			total_target_classes.append(target_classes_flat.cpu())
+				inter = torch.zeros(outputs[0].shape[:-1]).flatten()
+				inter[array_index.long()] = 1
+				inter = inter.view(outputs[0].shape[0], outputs[0].shape[1])
+				batchid = torch.where(inter)[0].to(targets.device)
 
-			if rank==0:
-				pbar.set_description(('%22s'*2 +'%22.4g' * 4) % (f'{torch.cuda.current_device()}', f'{total_correct}/{num_targets}', 
-					total_correct/num_targets, class_loss/(batch_idx+1), coord_loss/(batch_idx+1), total_loss/(batch_idx+1)))
+				op_scores = torch.softmax(outputs[0], dim=-1)[inter==1]
+				# op_class = torch.argmax(op_scores, dim=-1)
+				op_class_score, op_class = torch.max(op_scores, dim=-1)
+				op_coord = outputs[1][inter==1]
 
-			
+
+				# print(op_coord.shape, op_class.shape, batchid.shape, op_scores.shape)
+
+				target_classes = targets[:,1]
+
+				# Get metrics
+				val_metrics = calculate_metrics(class_index, outputs_obj, target_classes, nc)
+				cf = val_metrics[-1]
+				fours.append(cf)
+
+				metrices.append(torch.stack(val_metrics[:-1]))
+				
+				total_class_loss = total_class_loss + class_loss.item()
+				total_coord_loss += coord_loss.item()
+				total_loss += (class_loss + coord_loss).item()
+				
+				# print(cf)
+				correct = torch.sum(cf[:,0] + cf[:,1]).item()
+				incorrect = torch.sum(cf[:,2] + cf[:,3]).item()
+
+				total_correct += correct 
+				total_incorrect += incorrect
+				
+				if rank==0:
+					pbar.set_description(('%22s'*3 +'%22.4g' * 3) % (f'{torch.cuda.current_device()}', f'{correct}/{correct + incorrect}', 
+						f'{incorrect}/{correct + incorrect}', class_loss.item(), coord_loss.item(), (class_loss + coord_loss).item()))
+
+				op = torch.cat([batchid.view(-1,1), op_class.view(-1,1), op_coord, op_class_score.view(-1,1)], dim=-1)
+
+				if rank==0 and batch_idx<10:
+					plot_images(images[:,1:2,:,:], targets, paths=None, fname=f'images/val_batch_{batch_idx}_labels.jpg')
+					plot_images(images[:,1:2,:,:], op, paths=None, fname=f'images/val_batch_{batch_idx}_pred.jpg')
+
+
 	avg_loss = total_loss / len(val_loader)
-	avg_accuracy = total_correct / num_targets
-	metrices = torch.stack(metrices)
+	avg_accuracy = total_correct / (total_correct+total_incorrect)
+	metrices = torch.mean(torch.stack(metrices), dim=0)
+	fours = torch.sum(torch.stack(fours), dim=0)
+	names = ['Fovea', 'SCR']
+	loss = [total_class_loss, total_coord_loss]
+	fitness = get_fitness(torch.mean(metrices, dim=-1))
+	acc = [fitness, avg_loss]
+
 	if rank==0:
-		print('Metrices: ', metrices.shape, torch.mean(metrices, dim=0), torch.mean(metrices, dim=0).shape)
-	return avg_loss, avg_accuracy, total_pred_boxes, total_pred_classes, total_target_boxes, total_target_classes
+		print(('\n'+'%44s' + '%22s'*7) % ('[tp,tn,fp,fn]','Precision', 'Recall', 'F1', 'AP@0.5', 'AP@0.95', 'cls_loss/obj_loss', 'fitness/loss'))
+		for v in range(len(names)):
+			print(('%22s'*2 + '%22.4g'*7 + '\n') % (names[v], f'[{fours[v][0].item()},{fours[v][1]},{fours[v][2]},{fours[v][3]}]',
+				metrices[0][v].item(), metrices[1][v].item(), metrices[2][v].item(), 
+				metrices[3][v].item(), metrices[4][v].item(), loss[v], acc[v] ))
+		
+	return avg_loss, avg_accuracy, fitness #total_pred_boxes, total_pred_classes, total_target_boxes, total_target_classes
 
 
 
-def detector(rank, world_size, root, dataroot):
+
+def get_fitness(metrics):
+	p,r,_,ap,ap95 = metrics
+	return p*0.2+r*0.2+ap*0.2+ap95*0.4
+
+def detector(rank, world_size, root, dataroot, pretraining=False, pretrained_weights_path='best_pretrainer.pth'):
 	setup(rank, world_size)
-	# define the siamese network model
-	encoder = Encoder(hidden_dim=256, num_encoder_layers=6, nheads=8)
-	siamese_net = DataParallel(SiameseNetwork(encoder))
-
-	# load pre-trained weights
-	ckpt = torch.load('best_pretrainer.pth', map_location='cpu')
-	siamese_net.load_state_dict(ckpt['model_state_dict'])
-
-	siamese_net = siamese_net.module
-
-	# siamese_net = siamese_net.module
-	siamese_net.eval()
-
-	embedding = siamese_net.encoder
-
 	# trainig params
-	nc = 2
-	hidden_dim = embedding.fc.out_features
-	epochs = 2
+	nc = 100
+	epochs = 152
 	r = 3
 	space = 1
-	batch_size = 1
+	batch_size = 64
+	val_batch_size = 16
+
+	# if rank>-1:
+	train_data = get_dataset(rank, world_size, dataroot, 'train2', batch_size, r, space)
+	val_dataset = get_dataset(rank, world_size, dataroot, 'val2', batch_size, r, space)
+	gc.collect()
+	
+	# define the siamese network model
+	encoder = Encoder(hidden_dim=256, num_encoder_layers=6, nheads=8)
+
+	if pretraining:
+		siamese_net = DataParallel(SiameseNetwork(encoder))
+		# load pre-trained weights
+		ckpt = torch.load(pretrained_weights_path, map_location='cpu')
+		siamese_net.load_state_dict(ckpt['model_state_dict'])
+		siamese_net = siamese_net.module
+		siamese_net.eval()
+		embedding = siamese_net.module.encoder
+	
+	embedding = encoder
+	hidden_dim = embedding.hidden_dim
+
+	for param in embedding.parameters():
+		param.requires_grad=True
 
 	# define detection model
-	model = ObjDetect(embedding, hidden_dim=hidden_dim).to(rank)
-	model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+	model = ObjDetect(embedding, hidden_dim=hidden_dim, num_class=2).to(rank)
+	model = DDP(model, device_ids=[rank], find_unused_parameters=False)
 
 	# declare optimizer and scheduler
 	optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 	lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
 
-	# get datasets
-	train_loader, _ = get_dataset(rank, world_size, dataroot, 'train', batch_size, r, space)
-	val_loader, _ = get_dataset(rank, world_size, dataroot, 'val', batch_size, r, space)
+	# if rank==0:
+		# val_loader, _ = get_dataset(rank, world_size, dataroot, 'val', batch_size, r, space)
 
+	train_loader = get_loader(train_data, batch_size)
+	val_loader = get_loader(val_dataset, val_batch_size)
 
+	# torch.distributed.barrier()
 	best_fitness = 0
+	# del ckpt 
+	del train_data
+	torch.cuda.empty_cache()
+	gc.collect()
 	
 	for epoch in range(epochs):
-		detector_train_epoch(rank, model, optimizer, train_loader, epoch, epochs)
+		model = detector_train_epoch(rank, model, optimizer, train_loader, epoch, epochs, nc)
 		
 		# Update the learning rate
 		lr_scheduler.step()
+
+		detector_validate(rank, model, val_loader, nc)
 		
+		# metrics = detector_validate(rank, model, val_loader, nc)
+		# vloss, acc, fitness = metrics
+
+		# # torch.distributed.barrier()
+
+		# if fitness>=best_fitness:
+		# 	best_fitness = fitness
+		# 	save_path = root + 'outputs/detection_best.pth'
+		# else:
+		# 	save_path = root + 'outputs/detection_last.pth'
+		save_path = f'{root}outputs/detection_{epoch}.pth'
 		if rank==0:
-			metrics = detector_validate(rank, model, val_loader)
-			vloss, fitness = metrics[0], metrics[1]
-
-			if fitness>=best_fitness:
-				best_fitness = fitness
-				save_path = root + 'detection_best.pth'
-			else:
-				save_path = root + 'detection_last.pth'
-
-			# if rank==0:
 			checkpoint = {
 					'epoch': epoch,
-					'model_state_dict': siamese_net.module.state_dict(),
-					'optimizer_state_dict': optimizer.module.state_dict(),
+					'model_state_dict': model.state_dict(),
+					'optimizer_state_dict': optimizer.state_dict(),
 					'best_val_acc': best_fitness,
 				}
 			torch.save(checkpoint, save_path)
 	cleanup()
 		
-def get_dataset(rank, world_size,dataroot, task, batch_size, r, space, phases=["minitrain2", "minival2"]):
-	phase = phases[task in phases]
-	data_loader, dataset = create_dataloader(dataroot+phase,
-											  576,
-											  batch_size, 
-											  rank=rank,                                   
-											  cache='ram', # if opt.cache == 'val' else opt.cache,
-											  workers=8,
-											  phase='train',
-											  shuffle=True,
-											  r=r,
-											  space=space)
 
-	return data_loader, dataset
+
+
+def get_loader(dataset, batch_size):
+	sampler = DistributedSampler(dataset, shuffle=True)
+	data_loader = DataLoader(dataset,
+				  batch_size=batch_size,
+				  shuffle=False,
+				  num_workers=6,
+				  sampler=sampler, 
+				  drop_last=False,              
+				  collate_fn=dataset.collate_fn)
+	return data_loader
+
+
+
+
+def get_dataset(rank, world_size,dataroot, phase, batch_size, r, space):
+	dataset = create_dataloader(dataroot+phase,
+								576,
+								batch_size, 
+								rank=rank,                                   
+								cache='ram', # if opt.cache == 'val' else opt.cache,
+								workers=6,
+								phase=phase,
+								shuffle=True,
+								r=r,
+								space=space)
+	
+	return dataset
+
+
 
 
 
@@ -447,7 +539,7 @@ if __name__ == '__main__':
 	dataroot = '/media/jakep/eye/scr/pickle/'
 
 	# ddp
-	world_size = 1
+	world_size = 2
 	mp.spawn(detector, args=(world_size, root, dataroot), nprocs=world_size, join=True)
 
 

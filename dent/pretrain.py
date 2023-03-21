@@ -16,6 +16,7 @@ from PIL import Image
 from glob import glob
 from tqdm import tqdm
 from pathlib import Path
+from matplotlib import pyplot as plt
 from torch.nn.parallel import DataParallel
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import Dataset, DataLoader
@@ -23,18 +24,20 @@ from torchvision.models import resnet50, ResNet50_Weights
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from transformer import Encoder
+
 
 TQDM_BAR_FORMAT = '{l_bar}{bar:10}{r_bar}'  # tqdm bar format
 os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
 
-
+from utils.plots import plot_images
 
 def setup(rank, world_size):
     # Initialize the process group
     dist.init_process_group(
         backend="nccl",
-        init_method="tcp://127.0.0.1:24456",
+        init_method="tcp://127.0.0.1:28456",
         rank=rank,
         world_size=world_size
     )
@@ -46,14 +49,21 @@ def cleanup():
     dist.destroy_process_group()
 
 
+def printer(vals, names):
+    print('\n')
+    for val, name in zip(vals, names):
+        print(f'{name}: {val.shape}')
+
 
 class SiameseDataset(Dataset):
-    def __init__(self, root, rank, phase, transform=None, apply_limit= False, lim=100, percent=1.0, num_workers=2):
+    def __init__(self, root, rank, phase, transform=None, apply_limit= False, lim=100, percent=1.0, num_workers=8):
         """
         lim: Upper limit of negative examples per image
         """
 
         self.file_list = glob(os.path.join(root, phase + '/*.pkl'))
+        # self.count()
+        # print(A)
         random.shuffle(self.file_list)
         self.transform = transform
 
@@ -78,12 +88,18 @@ class SiameseDataset(Dataset):
                 # submit tasks to the executor and get futures
                 future1 = executor.submit(self.populate, pbars[0])
                 future2 = executor.submit(self.populate, pbars[1])
-                # future3 = executor.submit(self.populate, pbars[2])
-                # future4 = executor.submit(self.populate, pbars[3])
+                future3 = executor.submit(self.populate, pbars[2])
+                future4 = executor.submit(self.populate, pbars[3])
+
+                future5 = executor.submit(self.populate, pbars[4])
+                future6 = executor.submit(self.populate, pbars[5])
+                future7 = executor.submit(self.populate, pbars[6])
+                future8 = executor.submit(self.populate, pbars[7])
+
 
 
                 # wait for all tasks to complete and get results
-                results = [future1.result(), future2.result()] #, future2.result(), future2.result()]            
+                results = [future1.result(), future2.result(), future3.result(), future4.result(), future5.result(), future6.result()]            
 
             # self.negative_pairs = random.sample(self.negative_pairs, min(len(self.negative_pairs), int(2*len(self.positive_pairs))))
             if rank==0:
@@ -191,15 +207,39 @@ class SiameseDataset(Dataset):
         # get person id eg: '104L'
 
         fn = filename.split('/')[-1]        
-        lr = fn.find('L')+1
-        if not lr:
-            lr = fn.find('R')+1
+        lr = fn.find('L')
+        if lr==-1:
+            lr = fn.find('R')
 
         pid = fn[:lr]
-        testid = fn[:lr+1]
-        bscanid = (fn.split('.')[0]).split('_')[-1]
+        testid = fn[:lr+2]
+        # bscanid = (fn.split('.')[0]).split('_')[-1]
 
-        return pid, testid, bscanid
+        # print(fn, pid, testid)
+        # print(A)
+
+        return pid, testid
+
+    def count(self):
+        files = self.file_list
+        p=[]
+        t=[]
+        for f in files:
+            person, test = self._get_person_id(f)
+            p.append(person)
+            t.append(test)
+
+        print(len(set(p)), len(set(t)))
+        print(set(t))
+        l=0
+        r = 0
+        for c in set(t):
+            if 'L' in c:
+                l+=1
+            elif 'R' in c:
+                r+=1
+        print(l,r)
+
 
 
 
@@ -212,8 +252,8 @@ class SiameseDataset(Dataset):
         with open(filename2, "rb") as f:
             data2 = pickle.load(f)
 
-        images1 = Image.fromarray(data1["img"][0]).convert('RGB').resize((256, 224))
-        images2 = Image.fromarray(data2["img"][0]).convert('RGB').resize((256, 224))
+        images1 = Image.fromarray(data1["img"][0]).convert('RGB').resize((576, 256))
+        images2 = Image.fromarray(data2["img"][0]).convert('RGB').resize((576, 256))
 
         # Augmentations
         if self.transform:
@@ -230,100 +270,6 @@ class SiameseDataset(Dataset):
         return len(self.all_pairs)
 
 
-# class PositionalEncoding(nn.Module):
-#     def __init__(self, d_model, max_len=5000):
-#         super(PositionalEncoding, self).__init__()
-#         self.dropout = nn.Dropout(p=0.1)
-#         pe = torch.zeros(max_len, d_model)
-#         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-#         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-#         pe[:, 0::2] = torch.sin(position * div_term)
-#         pe[:, 1::2] = torch.cos(position * div_term)
-#         pe = pe.unsqueeze(0).transpose(0, 1)
-#         self.register_buffer('pe', pe)
-
-#     def forward(self, x):
-#         x = x + self.pe[:x.size(0), :]
-#         return self.dropout(x)
-
-
-class Encoder(nn.Module):
-    def __init__(self, hidden_dim=256, nheads=8, num_encoder_layers=6, dropout_rate=0.1):
-        super().__init__()
-        backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
-        backbone = nn.Sequential(*list(backbone.children())[:-2])
-        for i in backbone.parameters():
-            i.requires_grad=False
-        self.backbone = backbone
-        self.hidden_dim = hidden_dim
-        self.nheads = nheads
-        self.num_encoder_layers = num_encoder_layers
-        self.dropout_rate = dropout_rate
-        
-        # Create a positional encoding module
-        self.position_embedding = nn.Parameter(torch.randn(1, hidden_dim, 1, 1))
-        
-        # Create a linear layer for embedding the encoder features
-        self.linear_emb = nn.Linear(2048, hidden_dim)
-        
-        # Create a transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nheads, dropout=dropout_rate)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
-        
-
-    def forward(self, inputs):
-        # Get the features from the backbone
-        features = self.backbone(inputs)
-        
-        # Flatten the features and apply the linear embedding
-        batch_size, channels, height, width = features.shape
-        features = features.flatten(2).transpose(1, 2) # shape: (batch_size, num_patches, channels)
-        encoder_embedding = self.linear_emb(features) # shape: (batch_size, num_patches, hidden_dim)
-        
-        # Add the positional encoding to the embeddings
-        position_encoding = self.position_embedding.repeat(batch_size, 1, height, width).flatten(2).transpose(1, 2)
-        encoder_embedding += position_encoding # shape: (batch_size, num_patches, hidden_dim)
-        
-        # Apply the transformer encoder
-        encoder_outputs = self.encoder(encoder_embedding.transpose(0, 1)) # shape: (seq_len, batch_size, hidden_dim)
-        
-        return encoder_outputs
-
-
-
-# class DETREncoder(nn.Module):
-#     def __init__(self, hidden_dim=256, num_layers=6, nhead=8):
-#         super().__init__()
-#         backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
-#         self.backbone = nn.Sequential(*list(backbone.children())[:-2])
-#         self.conv = nn.Conv2d(in_channels=2048, out_channels=hidden_dim, kernel_size=1)
-#         self.pos_encoder = PositionalEncoding(hidden_dim)
-#         self.transformer_encoder = nn.TransformerEncoder(
-#             nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead),
-#             num_layers=num_layers
-#         )        
-#         self.fc = nn.Linear(in_features=2048, out_features=hidden_dim)
-
-#     def forward(self, x):
-#         features = self.backbone(x)  # (batch_size, 2048, H/32, W/32)
-
-#         # features = features.mean(dim=[2, 3])  # (batch_size, 2048)
-#         # features = self.fc(features)  # (batch_size, hidden_dim)
-#         # features = features.unsqueeze(1)  # (batch_size, 1, hidden_dim)
-#         # features = features.unsqueeze(0)  # (1, batch_size, hidden_dim) ~ (num_pixels, batch_size, hidden_dim)
-#         features = self.conv(features) # (batch, hidden_dim, H/32, W/32)
-#         features = features.flatten(2).permute(2, 0, 1)  # shape: (num_pixels, batch_size, hidden_dim)
-#         features = self.pos_encoder(features)  # shape: (num_pixels, batch_size, hidden_dim)
-#         # Transformer encoder
-#         encoded = self.transformer_encoder(features)  # shape: (num_pixels, batch_size, hidden_dim) 
-#         # encoded = self.transformer_encoder(features)  # (batch_size, 1, hidden_dim)
-#         # encoded = encoded.squeeze(1)  # (batch_size, hidden_dim)
-
-#         # encoded = encoded.permute(1, 0, 2) # (batch_size, num_pixels, hidden_dim) 
-
-#         return encoded
-
-
 class SiameseNetwork(nn.Module):
     def __init__(self, encoder):
         super(SiameseNetwork, self).__init__()
@@ -332,7 +278,8 @@ class SiameseNetwork(nn.Module):
     def forward(self, x1, x2):
         embedding1 = self.encoder(x1)
         embedding2 = self.encoder(x2)
-        return torch.mean(embedding1, dim=0), torch.mean(embedding2, dim=0)
+        # return torch.mean(embedding1, dim=1), torch.mean(embedding2, dim=1)
+        return embedding1, embedding2
     
 def get_loss(embeddings1, embeddings2, targets, margin=2.0):
         distances = F.pairwise_distance(embeddings1, embeddings2)
@@ -344,131 +291,94 @@ def contrastive_loss_cosine(embedding1, embedding2, similarity_label, margin=0.5
     loss = (1 - similarity_label) * 0.5 * cosine_distance**2 + similarity_label * 0.5 * torch.clamp(margin - cosine_distance, min=0)**2
     return loss.mean()
 
-def focal_loss(inputs, target, gamma=2, reduction='mean'):
-    alpha = get_alpha(target)
-    ce_loss = F.binary_cross_entropy_with_logits(inputs, target.float(), reduction='none')
-    pt = torch.exp(-ce_loss)
-    focal_loss = (1 - pt) ** gamma * ce_loss
-    if alpha is not None:
-        assert alpha.shape == target.shape
-        alpha = alpha.to(device=inputs.device)
-        focal_loss = alpha * focal_loss
-    if reduction == 'mean':
-        return torch.mean(focal_loss)
-    elif reduction == 'sum':
-        return torch.sum(focal_loss)
-    else:
-        return focal_loss
-
-
-def contrastive_focal_loss(emb1, emb2, target, margin=1.0, gamma=1.5):
-    distance = F.pairwise_distance(emb1, emb2)
-    loss = target * distance ** 2 + (1 - target) * F.relu(margin - distance) ** 2
-    loss = focal_loss(loss, target, gamma=gamma)
+def cosineembeddingloss(e1, e2, targets, scale=2, margin=0.2):
+    # target from -1 to 1
+    target = (2*targets)-1 
+    criteria = nn.CosineEmbeddingLoss(margin=margin, reduction='none')
+    loss = criteria(e1,e2,target)
     return loss
 
 
+# def contrastive_focal_loss(rank, emb1, emb2, target, margin=0.7, gamma=2, scale=2, eps=1e-2):
+#     alpha = 1.5*torch.ones(1).to(emb1.device)
+#     distance = F.pairwise_distance(emb1, emb2, p=2, keepdim=True).squeeze(-1) 
+#     bce_loss = F.binary_cross_entropy_with_logits(distance.unsqueeze(0), target.unsqueeze(0).float(), reduction='none')
+#     pt = torch.exp(-bce_loss)
+#     # Compute the contrastive focal loss
+#     cf_loss = (alpha*(1 - pt) ** gamma * bce_loss).squeeze(0)
+#     cos_loss = cosineembeddingloss(emb1, emb2, target, margin=-1.0)    
+#     cos_dist = 1 - F.cosine_similarity(emb1, emb2,dim=-1)
+#     # print(distance.shape, cf_loss.shape, cos_dist.shape, cos_loss.shape)
 
-def get_alpha(targets):
-    n_pos = targets.sum()
-    n_neg = (1 - targets).sum()
-    alpha_ = torch.tensor([n_neg / (n_pos + n_neg), n_pos / (n_pos + n_neg)])
-    alpha = torch.ones_like(targets).float()
-    # alpha = alpha_
-    alpha[targets==0] = alpha_[0]
-    alpha[targets==1] = alpha_[1]
-    return alpha
+#     if rank==0:
+#         for t,d,cf,cd,cl in zip(target, distance, cf_loss, cos_dist, cos_loss):
+#             print('\nTarget:', t.item(), 'l1 distance:', d.item(), 'contrastive loss:', cf.item())
+#             print('Cosine distance:', cd.item(), 'Cosine loss:', cl.item())
+    
+#     loss = cf_loss + cos_loss
+#     loss = torch.mean(loss)
 
+#     print('\n')
 
-
-def validate(rank, siamese_net, val_loader, thres=0.55):
-    siamese_net.eval()
-    with torch.no_grad():
-        total_loss = 0 
-        corrects = 0
-        tps = 0
-        tns = 0
-        total = 0
-
-        print(('\n' + '%22s' * 6) % ('Device', 'Correct', 'TP', 'TN', 'Accuracy', 'Loss'))
-        pbar = tqdm(enumerate(val_loader), total=len(val_loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
-
-        for batch_idx, (x1, x2, f1, f2, targets) in pbar:
-            x1 = x1.to(rank, non_blocking=True)
-            x2 = x2.to(rank, non_blocking=True)
-            targets = targets.to(rank, non_blocking=True)
-
-            # Forward pass
-            embeddings1, embeddings2 = siamese_net(x1, x2)
-
-            loss = contrastive_focal_loss(embeddings1, embeddings2, targets)
-
-            # distance between the embeddings for each batch (score)
-            dist = torch.norm((embeddings1-embeddings2), 2, dim=-1)
-            threshold = torch.ones_like(dist)*thres
-            # if dist < threshold op = 1 else op = 0
-            op = torch.relu(torch.sign(threshold-dist))
-
-            correct = op.eq(targets)
-            tp = correct[op==1].sum().item()
-            tn = correct[op==0].sum().item()
-
-            correct = correct.sum().item()
-            tps += tp
-            tns += tn
-            total += targets.size(0)
-            corrects += correct 
-
-            # accumulate loss
-            total_loss += loss.item()
-
-            pbar.set_description(('%22s'*4 +'%22.4g' * 2) % (rank, correct, tp, tn, correct/total, loss.item()))
+#     return loss
 
 
-        # calculate average loss and accuracy
-        avg_loss = total_loss / len(val_loader)
-        accuracy = corrects / total
+def contrastive_focal_loss(rank, emb1, emb2, target, margin=0.7, gamma=2, scale=2, eps=1e-5, alpha=0.7):
+    
+    distance = F.pairwise_distance(emb1, emb2, p=2, keepdim=True).squeeze(-1).sigmoid()
 
-    print(('\n'+ '%22s') % ('Validation stats:'))
-    print(('%22s' * 6) % ('Total', 'TP', 'TN', 'Incorrect', 'avg_acc', 'avg_loss'))
-    print(('%22s' * 4 + "%22.4g"*2) % (total, f'{tps}/{corrects}', f'{tns}/{corrects}', total-correct, accuracy, avg_loss))
+    distance = torch.clip(distance, eps, 1-eps)
 
-    return avg_loss, accuracy
+    p_t = torch.where(target==1, 1-distance, distance)
+
+    alpha = torch.ones_like(target)*alpha
+
+    alpha_t = torch.where(target==1, alpha, 1-alpha)
+
+    ce = -torch.log(p_t)
+
+    cf_loss = ce * alpha_t * (1-p_t)**gamma
+
+
+    cos_loss = cosineembeddingloss(emb1, emb2, target, margin=-1.0)    
+    cos_dist = 1 - F.cosine_similarity(emb1, emb2,dim=-1)
+
+    if rank==0:
+        for t,d,cf,cd,cl in zip(target, distance, cf_loss, cos_dist, cos_loss):
+            print('\nTarget:', t.item(), 'l1 distance:', d.item(), 'contrastive loss:', cf.item())
+            print('Cosine distance:', cd.item(), 'Cosine loss:', cl.item())
+    
+    loss = 0.8*cf_loss + 0.2*cos_loss
+    loss = torch.mean(loss)
+
+    print('\n')
+
+    return loss
 
 
 def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, running_loss=0):  
     siamese_net.train()
-    prev_valid_loss = torch.zeros(1)
 
     if rank ==0:
         print(('\n' + '%22s' * 6) % ('Device', 'Epoch', 'GPU Mem', 'E1minmax', 'E2minmax','Loss'))
 
     pbar = tqdm(enumerate(train_loader), total=len(train_loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:+10b}')
     # with torch.autograd.detect_anomaly():
-    #     with torch.autograd.profiler.profile():
     for batch_idx, (x1, x2, f1, f2, targets) in pbar:
         # print(f1, f2, targets)
         x1 = x1.to(rank, non_blocking=True)
         x2 = x2.to(rank, non_blocking=True)
         targets = targets.to(rank, non_blocking=True)
-
         optimizer.zero_grad()
         
         # Forward pass
         with autocast():
             embeddings1, embeddings2 = siamese_net(x1, x2)
-            loss = contrastive_focal_loss(embeddings1, embeddings2, targets)
-            # loss = contrastive_loss_cosine(embeddings1, embeddings2, targets)
+            loss = contrastive_focal_loss(rank, embeddings1[:,-1], embeddings2[:,-1], targets)
 
         # Backward pass and optimization
         loss.backward()
-        
-        torch.nn.utils.clip_grad_value_(siamese_net.parameters(), 1)
-        # grads = [p.grad.detach().flatten() for p in siamese_net.parameters() if p.grad is not None]
-        # print('\nafter clip', torch.max(grads), torch.min(grads))
         optimizer.step()
-        torch.cuda.empty_cache()
-        
         running_loss = running_loss+loss.item()
 
 
@@ -482,6 +392,73 @@ def train_epoch(rank, siamese_net, optimizer, train_loader, epoch, epochs, runni
                 (f'{rank}', f'{epoch}/{epochs - 1}', mem, minmaxe1, minmaxe2, running_loss/(batch_idx+1)))
             # except:
             #     pass
+            
+    return siamese_net
+
+
+
+def validate(rank, siamese_net, val_loader, thres=0.1):
+    siamese_net.eval()
+    with torch.no_grad():
+        total_loss = 0 
+        corrects = 0
+        tps = 0
+        tns = 0
+        total = 0
+
+        if rank==0:
+            print(('\n' + '%22s' * 5) % ('Correct', '(TP,P)', '(TN,N)', 'Accuracy', 'Loss'))
+        pbar = tqdm(enumerate(val_loader), total=len(val_loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
+
+        for batch_idx, (x1, x2, f1, f2, targets) in pbar:
+            x1 = x1.to(rank, non_blocking=True)
+            x2 = x2.to(rank, non_blocking=True)
+            targets = targets.to(rank, non_blocking=True)
+
+            # Forward pass
+            embeddings1, embeddings2 = siamese_net(x1, x2)
+
+            loss = contrastive_focal_loss(rank, embeddings1[:,-1], embeddings2[:,-1], targets)
+
+            # distance between the embeddings for each batch (score)
+            dist = torch.norm((embeddings1[:,-1] - embeddings2[:,-1]), 2, dim=-1)
+            # dist = dist.sigmoid()
+            
+            threshold = torch.ones_like(dist)*thres
+            # if dist < threshold op = 1 else op = 0
+            op = torch.relu(torch.sign(threshold-dist))
+
+            print([(d.item(), o.item(),t.item()) for d,o,t in zip(dist, op, targets)])
+
+            correct = op.eq(targets)
+            tp = correct[op==1].sum().item()
+            tn = correct[op==0].sum().item()
+
+            p = targets.sum().item()
+            n = len(targets) - p
+
+            correct = correct.sum().item()
+            tps += tp
+            tns += tn
+            total += targets.size(0)
+            corrects += correct 
+
+            # accumulate loss
+            total_loss += loss.item()
+
+            if rank==0:
+                pbar.set_description(('%22s'*3 +'%22.4g' * 2) % (correct, f'({tp},{p})', f'({tn},{n})', correct/total, loss.item()))
+
+
+        # calculate average loss and accuracy
+        avg_loss = total_loss / len(val_loader)
+        accuracy = corrects / total
+    if rank==0:
+        print(('\n'+ '%22s') % ('Validation stats:'))
+        print(('%22s' * 6) % ('Total', 'TP', 'TN', 'Incorrect', 'avg_acc', 'avg_loss'))
+        print(('%22s' * 4 + "%22.4g"*2) % (total, f'{tps}/{corrects}', f'{tns}/{corrects}', total-corrects, accuracy, avg_loss))
+
+    return avg_loss, accuracy
 
 
 def tx():
@@ -489,18 +466,20 @@ def tx():
         transforms.RandomRotation(degrees=5),
         transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ]),
 
         'val': transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
         }
     return tx_dict
 
 
-def get_dataset(world_size, rank, dataroot, phase, lim, transform, batch_size=64, percent=1.0, shuffle=False, num_workers=8):
+def get_dataset(world_size, rank, dataroot, phase, lim, transform, apply_limit=False, batch_size=64, percent=1.0, shuffle=False, num_workers=8):
 
-    dataset = SiameseDataset(dataroot, rank, phase, transform, lim=lim, percent=percent)
+    dataset = SiameseDataset(dataroot, rank, phase, transform, apply_limit=apply_limit, lim=lim, percent=percent)
     if world_size>0:
         sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
     else:
@@ -515,15 +494,15 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
     setup(rank, world_size)
 
     num_epochs = 152
-    batch_size = 128 #// world_size
+    batch_size = 64 #// world_size
     
     tx_dict = tx()
     train_loader, train_sampler = get_dataset(world_size, rank, dataroot, 
                                             phase=phases[0], lim=100, 
                                             transform=tx_dict['train'], 
-                                            batch_size=batch_size, percent=0.1)
+                                            batch_size=batch_size, percent=1)
     val_loader, val_sampler = get_dataset(world_size, rank, dataroot, 
-                                        phase=phases[1], lim=50, 
+                                        phase=phases[1], lim=8, apply_limit=False,
                                         transform=tx_dict['val'], 
                                         batch_size=batch_size)
 
@@ -558,14 +537,15 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
     # Train the network
     for epoch in range(start_epoch, num_epochs):
         train_sampler.set_epoch(epoch)
-        train_epoch(rank, siamese_net, optimizer, train_loader, epoch, num_epochs, running_loss=0)
+        siamese_net = train_epoch(rank, siamese_net, optimizer, train_loader, epoch, num_epochs, running_loss=0)
         
         # Update the learning rate
         lr_scheduler.step()
 
-        if rank==0:
-            vloss, acc = validate(rank, siamese_net, val_loader)
+        vloss, acc = validate(rank, siamese_net, val_loader)
 
+        # torch.distributed.barrier()
+        if rank==0:
             if acc>=best_accuracy:
                 best_accuracy = acc
                 # save_path = root + 'epoch' + str(epoch) + 'best_pretrainer.pth'
@@ -580,7 +560,6 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
                     'best_val_acc': best_accuracy,
                 }
             torch.save(checkpoint, save_path)
-            print('\nSaved weights to', save_path)
 
 
     # Clean up the process group
@@ -588,20 +567,21 @@ def pretrainer(rank, world_size, root, dataroot, phases=['sample', 'sample'], re
 
 
 __all__ = ['pretrainer', 'train_epoch', 'SiameseDataset', 'Encoder', 'SiameseNetwork', 'contrastive_loss_cosine', 'contrastive_focal_loss',
-           'focal_loss', 'validate', 'tx', 'get_dataset', 'setup', 'cleanup']
+           'validate', 'tx', 'get_dataset', 'setup', 'cleanup']
 
 if __name__ == '__main__':
-    # devices = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    # device_ids = [0, 1]
 
-    # root = '/media/jakep/eye/scr/dent/'
-    # dataroot = '/media/jakep/eye/scr/pickle/'
-    root = './'
+    root = '/media/jakep/eye/scr/dent/'
     dataroot = '../pickle/'
 
+
+    # train_loader, train_sampler = get_dataset(0, 0, dataroot, 
+    #                                         phase='train2', lim=100, 
+    #                                         batch_size=1, percent=0.01, transform=None)
+    val_loader, val_sampler = get_dataset(0, 0, dataroot, 
+                                        phase='val2', lim=8, apply_limit=False,
+                                        batch_size=1, transform=None)
 
     # ddp
     world_size = 2
     mp.spawn(pretrainer, args=(world_size, root, dataroot, ['train2', 'val2'], False), nprocs=world_size, join=True)
-
-    # pretrain(devices, device_ids, root, dataroot)

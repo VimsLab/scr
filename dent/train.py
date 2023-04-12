@@ -77,7 +77,6 @@ def get_loader(dataset, batch_size):
 
 def get_dataset(rank, world_size,dataroot, phase, batch_size, r, space):
 	dataset = create_dataloader(dataroot+phase,
-								576,
 								batch_size, 
 								rank=rank,                                   
 								cache='ram', # if opt.cache == 'val' else opt.cache,
@@ -110,7 +109,7 @@ def train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion, 
 	if rank==0:
 		print(('\n' + '%22s' * 4) % ('Device', 'Epoch', 'GPU Mem', 'Loss'))
 
-	pbar = tqdm(enumerate(train_loader), total=len(train_loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:+10b}')
+	pbar = tqdm(enumerate(train_loader), total=len(train_loader), bar_format=TQDM_BAR_FORMAT)
 
 	for batch_idx, (img, targets) in pbar:
 		img = img.to(rank, non_blocking=True)
@@ -126,11 +125,6 @@ def train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion, 
 			tgt.append(tg)
 
 		tgt = torch.cat(tgt)
-
-		# if rank==0:
-		# 	print(torch.max(img[:,1]), torch.min(img[:,1]))
-		# 	plot_images(img[:,1].cpu(), tgt.cpu(), fname=str(batch_idx)+'.png')
-		# Forward pass
 		outputs = model(img.permute(1,0,2,3,4))
 		outputs = {'pred_logits':outputs[0], 'pred_boxes': outputs[1]}
 		targets = [{'labels': t[:,0], 'boxes':t[:,1:]} for t in targets]
@@ -152,17 +146,24 @@ def train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion, 
 	return model
 
 
+def load_saved_model(weights_path, root, M, O=None):
+	ckptfile = root + 'runs/' + weights_path + '.pth'
+	ckpts = torch.load(ckptfile, map_location='cpu')
+	M.load_state_dict(ckpts['model_state_dict'])
+	if O is not None:
+		O.load_state_dict(ckpts['optimizer_state_dict'])
+		start_epoch = ckpts['epoch']+1
+		best_accuracy = ckpts['best_val_acc']
+		return M, O, start_epoch, best_accuracy
+
+	return M
+	
+
+
 # def detector(rank, world_size, root, dataroot, pretraining=False, pretrained_weights_path='best_pretrainer.pth', resume=False):
 def detector(rank, world_size, opt):
 	setup(rank, world_size)
-	# trainig params
-	# nc = 2
-	# epochs = 152
-	# r = 3
-	# space = 1
-	# batch_size = 16
-	# val_batch_size = 16
-
+	
 	nc = opt.nc
 	epochs = opt.epochs
 	r = opt.r
@@ -173,18 +174,23 @@ def detector(rank, world_size, opt):
 	dataroot = opt.dataroot
 	root = opt.root
 
-	pretraining = opt.pretrain 
-	pretrained_weights_path = opt.pretrain_weights
-
 	resume = opt.resume
+	resume_weights = opt.resume_weights
 
-	# if rank>-1:
+	pretraining = opt.pretrain 
+	pretrain_weights = opt.pretrain_weights
+
+	encoder = Encoder(hidden_dim=256,num_encoder_layers=6, nheads=8)
+
+	if pretraining:
+		encoder = load_saved_model(pretrain_weights, root, encoder, None)
+
 	train_data = get_dataset(rank, world_size, dataroot, 'val2', batch_size, r, space)
 	val_dataset = get_dataset(rank, world_size, dataroot, 'val2', batch_size, r, space)
 	gc.collect()
 	
 	# define detection model
-	model = Dent(hidden_dim=256, num_class=2).to(rank)
+	model = Dent_Pt(encoder, hidden_dim=256, num_class=2).to(rank)
 	model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
 	# declare optimizer and scheduler
@@ -205,16 +211,10 @@ def detector(rank, world_size, opt):
 	start_epoch = 0
 
 	if resume:
-		ckptfile = root + resume + '.pth'
-		ckpts = torch.load(ckptfile, map_location='cpu')
-		model.load_state_dict(ckpts['model_state_dict'])
-		optimizer.load_state_dict(ckpts['optimizer_state_dict'])
-		start_epoch = ckpts['epoch']+1
-		best_accuracy = ckpts['best_val_acc']
-
+		model, optimizer, start_epoch, best_accuracy = load_saved_model(resume_weights, root, model, optimizer)
 		if rank == 0:
 			print('Resuming training from epoch {}. Loaded weights from {}. Last best accuracy was {}'
-				.format(start_epoch, ckptfile, best_accuracy))
+				.format(start_epoch, resume_weights, best_accuracy))
 
 	
 	for epoch in range(start_epoch, epochs):
@@ -243,9 +243,10 @@ def arg_parse():
     parser.add_argument('--root', type=str, default='/media/jakep/eye/scr/dent/', help='project root path')
     parser.add_argument('--dataroot', type=str, default='/media/jakep/eye/scr/pickle/', help='path to pickled dataset')
     parser.add_argument('--world_size', type=int, default=2, help='World size')
-    parser.add_argument('--resume', type=str, default='False', help='path to trained weights or "False"')
+    parser.add_argument('--resume', type=bool, default=False, help='To resume or not to resume')
+    parser.add_argument('--resume_weights', type=str, default='best', help='path to trained weights if resume')
     parser.add_argument('--pretrain', type=bool, default=True, help='Begin with pretrained weights or not. Must provide path if yes.')
-    parser.add_argument('--pretrain_weights', type=str, default='best_pretrainer.pth', help='path to pretrained weights. --pretrain must be true')
+    parser.add_argument('--pretrain_weights', type=str, default='0best_pretrainer.pth', help='path to pretrained weights. --pretrain must be true')
     
     parser.add_argument('--nc', type=int, default=2, help='number of classes')
     parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train')
@@ -261,10 +262,4 @@ def arg_parse():
 if __name__ == '__main__':
 
 	opt = arg_parse()
-
-	# root = '/media/jakep/eye/scr/dent/'
-	# dataroot = '/media/jakep/eye/scr/pickle/'
-
-	# # ddp
-	# world_size = 2
 	mp.spawn(detector, args=(opt.world_size, opt), nprocs=opt.world_size, join=True)

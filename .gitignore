@@ -33,6 +33,7 @@ sample_pkl/*
 data/images/*
 imagetest/*
 data/*
+dent/data/*
 images/*
 !data/*.yaml
 !data/hyps

@@ -20,6 +20,7 @@
 *.data
 *.json
 *.cfg
+*.zip
 !setup.cfg
 !cfg/yolov3*.cfg
 
@@ -30,12 +31,13 @@ yolov5/*
 pickle/*
 sample_pkl/*
 data/images/*
+imagetest/*
+data/*
+images/*
 !data/*.yaml
 !data/hyps
 !data/scripts
 !data/images
-!data/images/zidane.jpg
-!data/images/bus.jpg
 !data/*.sh
 
 results*.csv

@@ -22,8 +22,9 @@ from PIL import Image, ImageDraw, ImageFont
 from utils import TryExcept, threaded
 from utils.general import (CONFIG_DIR, FONT, LOGGER, check_font, check_requirements, clip_boxes, increment_path,
                            is_ascii, xywh2xyxy, xyxy2xywh)
-from utils.metrics import fitness
+# from utils.metrics import fitness
 # from utils.segment.general import scale_image
+
 
 # Settings
 RANK = int(os.getenv('RANK', -1))
@@ -585,3 +586,6 @@ def save_one_box(xyxy, im, file=Path('im.jpg'), gain=1.02, pad=10, square=False,
         # cv2.imwrite(f, crop)  # save BGR, https://github.com/ultralytics/yolov5/issues/7007 chroma subsampling issue
         Image.fromarray(crop[..., ::-1]).save(f, quality=95, subsampling=0)  # save RGB
     return crop
+
+
+

@@ -48,6 +48,8 @@ random.seed(1027)
 
 import wandb
 
+wb=False
+
 TQDM_BAR_FORMAT = '{desc} {n_fmt}/{total_fmt} [{elapsed} | {remaining} | {rate_fmt}]'
 
 
@@ -64,7 +66,7 @@ def compute_loss(outputs, targets, criterion):
 
 
 
-def epoch_validate(rank, model, val_loader, criterion, nc, plot=True):
+def epoch_validate(rank, model, val_loader, criterion, nc, plot=True, wb=False):
 	# torch.cuda.empty_cache()
 	# gc.collect()
 
@@ -95,8 +97,9 @@ def epoch_validate(rank, model, val_loader, criterion, nc, plot=True):
 
 			
 			loss, batch_loss = compute_loss(outputs, target, criterion)
-			wandb.log({'val_loss': loss})
-			wandb.log({'val_'+a:b for a,b in batch_loss.items()})
+			if wb:
+				wandb.log({'val_loss': loss})
+				wandb.log({'val_'+a:b for a,b in batch_loss.items()})
 			# plot_attention(images[1].detach().cpu(), atn.permute(0,2,1).detach().cpu(), fn)
 			lossess.append(loss.item())
 
@@ -205,19 +208,19 @@ def validate(rank, world_size, opt):
 	model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
 	val_loader = get_loader(val_dataset, batch_size)
-
-	wandb.init(
-      project="scr", 
-      name="test", 
-      config={
-      "architecture": "DENT",
-      "dataset": "SCR",
-      "steps": len(val_loader),
-      "batch":32,
-      "num_classes": 2, 
-      "class_names": ['Fovea, SCR']
-      
-      })
+	if wb:
+		wandb.init(
+		project="scr", 
+		name="test", 
+		config={
+		"architecture": "DENT",
+		"dataset": "SCR",
+		"steps": len(val_loader),
+		"batch":32,
+		"num_classes": 2, 
+		"class_names": ['Fovea, SCR']
+		
+		})
   
 
 	ckptfile = root + weights + '.pth'
@@ -228,8 +231,9 @@ def validate(rank, world_size, opt):
 
 	criterion_val,_ = loss_functions(nc, phase='val')
 	# rank = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-	epoch_validate(rank, model, val_loader, criterion_val, nc)
-	wandb.finish()
+	epoch_validate(rank, model, val_loader, criterion_val, nc, wb=wb)
+	if wb:
+		wandb.finish()
 	cleanup()
 
 
@@ -252,6 +256,7 @@ def arg_parse():
 
 
 if __name__ == '__main__':
-	wandb.login()
+	if wb:
+		wandb.login()
 	opt = arg_parse()
 	mp.spawn(validate, args=(opt.world_size, opt), nprocs=opt.world_size, join=True)

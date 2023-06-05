@@ -42,7 +42,7 @@ from eval.eval import EvaluationCriterion, Meter
 
 import wandb
 
-
+wb = False
 os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
 TQDM_BAR_FORMAT = '{desc} {n_fmt}/{total_fmt} [{elapsed} | {remaining} | {rate_fmt}]'
@@ -115,8 +115,8 @@ def compute_loss(outputs, targets, criterion, nc=2):
 	total_loss = sum(loss_elements)
 	
 	loss_elements = torch.stack(loss_elements)
-
-	wandb.log({'train_'+a:b for a,b in zip(weight_dict.keys(), loss_elements)})
+	if wb:
+		wandb.log({'train_'+a:b for a,b in zip(weight_dict.keys(), loss_elements)})
 
 	return loss_elements, total_loss
 
@@ -141,7 +141,7 @@ def train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion, 
 		target = [t.to(rank, non_blocking=True) for t in target]
 		optimizer.zero_grad()
 
-		outputs, atn = model(img.permute(1,0,2,3,4))
+		outputs = model(img.permute(1,0,2,3,4))
 		outputs = {'pred_logits':outputs[0], 'pred_boxes': outputs[1]}
 		targets = [{'labels': t[:,0], 'boxes':t[:,1:]} for t in target]
 	
@@ -155,7 +155,8 @@ def train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion, 
 
 		avg_ls = ls.returns(ls.means('r'))
 		avg_ls_dict = ls_dict.returns(ls_dict.means())
-		wandb.log({"train_loss": loss})
+		if wb:
+			wandb.log({"train_loss": loss})
 		
 
 		if rank==0:
@@ -173,8 +174,9 @@ def train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion, 
 	
 def run_eval(rank, root, epoch, lr_scheduler, model, val_loader, criterion_val, nc, best_fitness):
 	
-	fitness, valloss = epoch_validate(rank, model, val_loader, criterion_val, nc)
-	wandb.log({'fitness':fitness})
+	fitness, valloss = epoch_validate(rank, model, val_loader, criterion_val, nc, wb=wb)
+	if wb:
+		wandb.log({'fitness':fitness})
 	
 	if rank==0:
 		if fitness>best_fitness:
@@ -281,31 +283,33 @@ def detector(rank, world_size, opt):
 		if rank == 0:
 			print('Resuming training from epoch {}. Loaded weights from {}. Last best accuracy was {}'
 				.format(start_epoch, resume_weights, best_accuracy))
-	wandb.login()
-	wandb.init(
-      project="scr", 
-      name=f"train", 
-      config={
-      "architecture": "DENT",
-      "dataset": "SCR",
-      "epochs": opt.epochs,
-      })
+	if wb:
+		wandb.login()
+		wandb.init(
+		project="scr", 
+		name=f"train", 
+		config={
+		"architecture": "DENT",
+		"dataset": "SCR",
+		"epochs": opt.epochs,
+		})
   
 	
 	for epoch in range(start_epoch, epochs):
 		sampler.set_epoch(epoch)
 		lr = lr_scheduler.optimizer.param_groups[0]['lr']
-		wandb.run.summary['LR'] = lr
-		wandb.define_metric("loss", summary="min")
-		wandb.define_metric("best_fitness", summary="max")
+		if wb:
+			wandb.run.summary['LR'] = lr
+			wandb.define_metric("loss", summary="min")
+			wandb.define_metric("best_fitness", summary="max")
 
 		model, train_loss = train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion_train, nc=nc)		
 		model, fitness, best_fitness, loss = run_eval(rank, root, epoch, lr_scheduler, model, val_loader, criterion_val, nc, best_fitness)
 		lr_scheduler.step(train_loss)
 
-		
-	wandb.log_artifact(model)
-	wandb.finish()	
+	if wb:
+		wandb.log_artifact(model)
+		wandb.finish()	
 	cleanup()
 		
 

@@ -81,7 +81,7 @@ class CustomTransformerEncoderLayer(nn.TransformerEncoderLayer):
 		
 		output += residual
 		
-		return output, self_attn_weights
+		return output #, self_attn_weights
 
 
 
@@ -259,7 +259,7 @@ class TransformerDecoder(nn.Module):
 		if self.norm is not None:
 			output = self.norm(output)
 
-		return output, atn
+		return output #, atn
 
 class TransformerDecoderLayer(nn.Module):
 	__constants__ = ['batch_first', 'norm_first']

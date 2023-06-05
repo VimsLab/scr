@@ -27,7 +27,6 @@
 storage.googleapis.com
 runs/*
 data/*
-wandb/*
 yolov5/*
 pickle/*
 sample_pkl/*
@@ -249,6 +248,7 @@ cmake-build-release/
 
 # IntelliJ
 out/
+wandb/
 
 # mpeltonen/sbt-idea plugin
 .idea_modules/

@@ -27,11 +27,11 @@ from sklearn.metrics import precision_recall_curve, average_precision_score, f1_
 
 from pretrain import *
 from utils.plots import plot_images
-from utils.dl import create_dataloader
-from matching_loss import build_matcher
+from utils.dataloader import create_dataloader
+from loss.matching_loss import build_matcher
 from utils.general import xywh2xyxy, xyxy2xywh
-from loss_criterion import *
-from matching_loss import box_cxcywh_to_xyxy
+from loss.loss_criterion import *
+from loss.matching_loss import box_cxcywh_to_xyxy
 
 import time
 import torchvision

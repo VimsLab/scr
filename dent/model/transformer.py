@@ -190,7 +190,7 @@ class CustomTransformerEncoder(nn.TransformerEncoder):
 		if self.norm is not None:
 			output = self.norm(output)
 		
-		return output, atn
+		return output
 
 
 class Encoder(nn.Module):
@@ -233,9 +233,9 @@ class Encoder(nn.Module):
 
 		
 		# Apply the transformer encoder
-		encoder_outputs, atn = self.encoder(encoder_embedding) # shape: (batch_size, seq_len, hidden_dim)
+		encoder_outputs = self.encoder(encoder_embedding) # shape: (batch_size, seq_len, hidden_dim) #16 144 256
 		
-		return encoder_outputs, atn
+		return encoder_outputs
 
 
 
@@ -254,12 +254,12 @@ class TransformerDecoder(nn.Module):
 		output = tgt
 
 		for mod in self.layers:
-			output = mod(output, memory)
+			output, atn = mod(output, memory)
 
 		if self.norm is not None:
 			output = self.norm(output)
 
-		return output
+		return output, atn
 
 class TransformerDecoderLayer(nn.Module):
 	__constants__ = ['batch_first', 'norm_first']
@@ -305,10 +305,11 @@ class TransformerDecoderLayer(nn.Module):
 		k = memory[1] + self.position_encoding.repeat(b, 1, hdim)
 		x = tgt
 		x = self.norm1(x + self._sa_block(x))
+		y = x.clone()
 		x = self.norm2(x + self._mha_block(x, k, v))
 		x = self.norm3(x + self._ff_block(x))
 
-		return x
+		return x, y
 
 
 	# self-attention block
@@ -363,7 +364,7 @@ class Decoder(nn.Module):
 		tgt = torch.zeros((b, self.num_queries, self.hidden_dim), device=memory.device)
 
 		# dl = self.decoder_layer(tgt, memory)
-		output = self.decoder(tgt, memory)
+		output, atn = self.decoder(tgt, memory)
 
 		# Generate class and bbox embeddings from the output tensor
 		class_output = self.class_embed(output)
@@ -416,10 +417,10 @@ class Dent_Pt(nn.Module):
 		e2=self.encoder(inputs[1])
 		e3=self.encoder(inputs[2])
 
-		e=torch.stack([e1,e2,e3])
-		outputs=self.decoder(e)
+		e = torch.stack([e1,e2,e3])
+		(op1, op2) = self.decoder(e)
 
-		return outputs
+		return op1, op2
 
 
 

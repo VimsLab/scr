@@ -27,6 +27,7 @@
 storage.googleapis.com
 runs/*
 data/*
+wandb/*
 yolov5/*
 pickle/*
 sample_pkl/*

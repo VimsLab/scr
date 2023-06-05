@@ -1,8 +1,9 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torchvision.ops import complete_box_iou_loss
 
-from matching_loss import build_matcher, box_cxcywh_to_xyxy, box_xyxy_to_cxcywh, box_iou, generalized_box_iou
+from .matching_loss import build_matcher, box_cxcywh_to_xyxy, generalized_box_iou, box_iou_loss
 
 
 
@@ -34,6 +35,7 @@ def reduce_dict(input_dict, average=True):
 
 
 
+
 class SetCriterion(nn.Module):
 	""" This class computes the loss for DETR.
 	The process happens in two steps:
@@ -59,43 +61,75 @@ class SetCriterion(nn.Module):
 		empty_weight[-1] = self.eos_coef
 		self.register_buffer('empty_weight', empty_weight)
 
+	# @torch.no_grad()
+	# def loss_cardinality(self, outputs, targets, indices, num_boxes):
+	# 	""" Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
+	# 	This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
+	# 	"""
+	# 	pred_logits = outputs['pred_logits']
+	# 	device = pred_logits.device
+	# 	tgt_lengths = torch.as_tensor([len(v["labels"]) for v in targets], device=device)
+	# 	# Count the number of predictions that are NOT "no-object" (which is the last class)
+	# 	card_pred = (pred_logits.argmax(-1) != 0).sum(1)
+		
+	# 	card_err = F.l1_loss(card_pred.float(), tgt_lengths.float())
+	# 	losses = {'cardinality_error': card_err}
+	# 	return losses
+	
+	def loss_nihuglabels(self, outputs, targets, indices, num_boxes, alpha=None, gamma=3):
+		assert 'pred_logits' in outputs
+		# src_logits = outputs['pred_logits']
+
+		idx = self._get_src_permutation_idx(indices)
+		src_logits = outputs['pred_logits'][idx]#.unsqueeze(0)
+
+		target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+		target_classes = target_classes_o.long().view(-1,1)#.unsqueeze(0).long()
+
+		alpha = torch.tensor([self.eos_coef, 0.55, 0.4]).type_as(src_logits).to(src_logits.device)
+		logpt = torch.log(src_logits).gather(1, target_classes)
+		logpt = logpt.view(-1)
+		pt = torch.exp(logpt)
+
+		alpha = alpha.gather(0, target_classes.view(-1))
+		loss_ce = -1 * alpha * (1-pt) ** gamma * logpt
+		loss_ce = loss_ce.sum()/num_boxes
+
+
+		# print(loss_ce, loss_ce.shape)
+		# print((loss_ce>0).sum(), loss_ce.mean())
+		losses = {'loss_ce': loss_ce}
+
+		# if (not len(target_classes)) or (not len(src_logits)):
+		# 	losses = {'loss_ce': 1e-3*torch.ones_like(loss_ce)}
+
+		return losses
+
+
 	def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
 		"""Classification loss (NLL)
 		targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
 		"""
 		assert 'pred_logits' in outputs
-		src_logits = outputs['pred_logits']
+		# src_logits = outputs['pred_logits']
 
 		idx = self._get_src_permutation_idx(indices)
-		target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
-		target_classes = torch.full(src_logits.shape[:2], self.num_classes,
-									dtype=torch.int64, device=src_logits.device)
-		# print(idx, target_classes, target_classes_o)
-		target_classes[idx] = target_classes_o.long()
+		src_logits = outputs['pred_logits'][idx]#.unsqueeze(0)
 
-		loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+		target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+		target_classes = target_classes_o.long()#.unsqueeze(0).long()
+
+		weights = torch.tensor([self.eos_coef, 0.6, 0.35]).to(src_logits.device)
+
+		
+		loss_ce = F.nll_loss(torch.log(src_logits), target_classes, weight=weights, reduction='none')
+		loss_ce = loss_ce.sum()/num_boxes
 		losses = {'loss_ce': loss_ce}
 
-		# if log:
-		# 	# TODO this should probably be a separate loss, not hacked in this one here
-		# acc = accuracy(src_logits[idx], target_classes_o)[0]
-		# losses['class_error'] = 100 - acc
 		return losses
+	
 
-	@torch.no_grad()
-	def loss_cardinality(self, outputs, targets, indices, num_boxes):
-		""" Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
-		This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
-		"""
-		pred_logits = outputs['pred_logits']
-		device = pred_logits.device
-		tgt_lengths = torch.as_tensor([len(v["labels"]) for v in targets], device=device)
-		# Count the number of predictions that are NOT "no-object" (which is the last class)
-		card_pred = (pred_logits.argmax(-1) != 0).sum(1)
-		
-		card_err = F.l1_loss(card_pred.float(), tgt_lengths.float())
-		losses = {'cardinality_error': card_err}
-		return losses
+
 
 	def loss_boxes(self, outputs, targets, indices, num_boxes):
 		"""Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
@@ -106,17 +140,23 @@ class SetCriterion(nn.Module):
 		idx = self._get_src_permutation_idx(indices)
 		src_boxes = outputs['pred_boxes'][idx]
 		target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
-
+		
 		loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
 
 		losses = {}
 		losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
-		loss_giou = 1 - torch.diag(generalized_box_iou(
-			box_cxcywh_to_xyxy(src_boxes),
-			box_cxcywh_to_xyxy(target_boxes)))
-		losses['loss_giou'] = loss_giou.sum() / num_boxes
+		loss_iou = complete_box_iou_loss(box_cxcywh_to_xyxy(src_boxes), box_cxcywh_to_xyxy(target_boxes), reduction='none')
+		losses['loss_giou'] = loss_iou.sum() / num_boxes
+
+		# loss_giou = 1 - torch.diag(generalized_box_iou(
+		# 	box_cxcywh_to_xyxy(src_boxes),
+		# 	box_cxcywh_to_xyxy(target_boxes)))
+		# losses['loss_giou'] = loss_giou.sum() / num_boxes
+
 		return losses
+	
+	
 
 	def loss_masks(self, outputs, targets, indices, num_boxes):
 		"""Compute the losses related to the masks: the focal loss and the dice loss.
@@ -162,7 +202,7 @@ class SetCriterion(nn.Module):
 	def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
 		loss_map = {
 			'labels': self.loss_labels,
-			'cardinality': self.loss_cardinality,
+			# 'cardinality': self.loss_cardinality,
 			'boxes': self.loss_boxes,
 			# 'masks': self.loss_masks
 		}
@@ -181,6 +221,7 @@ class SetCriterion(nn.Module):
 
 		# Retrieve the matching between the outputs of the last layer and the targets
 		indices = self.matcher(outputs_without_aux, targets)
+		print
 
 		# Compute the average number of target boxes accross all nodes, for normalization purposes
 		num_boxes = sum(len(t["labels"]) for t in targets)
@@ -194,22 +235,6 @@ class SetCriterion(nn.Module):
 		for loss in self.losses:
 			losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
 
-		# In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
-		if 'aux_outputs' in outputs:
-			for i, aux_outputs in enumerate(outputs['aux_outputs']):
-				indices = self.matcher(aux_outputs, targets)
-				for loss in self.losses:
-					if loss == 'masks':
-						# Intermediate masks losses are too costly to compute, we ignore them.
-						continue
-					kwargs = {}
-					if loss == 'labels':
-						# Logging is enabled only for the last layer
-						kwargs = {'log': False}
-					l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
-					l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
-					losses.update(l_dict)
-
 		return losses
 
 
@@ -217,8 +242,8 @@ class SetCriterion(nn.Module):
 def loss_functions(nc, phase='train'):
 	
 	matcher = build_matcher()
-	losses = ['labels', 'boxes', 'cardinality']
-	weight_dict = {'loss_ce':1, 'loss_bbox':5, 'loss_giou':2}
-	criterion = SetCriterion(nc, matcher=matcher, losses=losses, weight_dict=weight_dict, eos_coef=0.1).to(torch.distributed.get_rank())
+	losses = ['labels', 'boxes']
+	weight_dict = {'loss_ce':2, 'loss_bbox':3, 'loss_giou':5}
+	criterion = SetCriterion(nc, matcher=matcher, losses=losses, weight_dict=weight_dict, eos_coef=0.05).to(torch.distributed.get_rank())
 	return criterion, matcher
 

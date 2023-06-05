@@ -2,7 +2,8 @@
 """
 Plotting utils
 """
-
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 import contextlib
 import math
 import os
@@ -16,15 +17,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sn
+import wandb
 import torch
 from PIL import Image, ImageDraw, ImageFont
-
+import torchvision.transforms.v2 as transforms
 from utils import TryExcept, threaded
 from utils.general import (CONFIG_DIR, FONT, LOGGER, check_font, check_requirements, clip_boxes, increment_path,
                            is_ascii, xywh2xyxy, xyxy2xywh)
 # from utils.metrics import fitness
 # from utils.segment.general import scale_image
-
+# torchvision.disable_beta_transforms_warning()
 
 # Settings
 RANK = int(os.getenv('RANK', -1))
@@ -36,8 +38,9 @@ class Colors:
     # Ultralytics color palette https://ultralytics.com/
     def __init__(self):
         # hex = matplotlib.colors.TABLEAU_COLORS.values()
-        hexs = ('FF3838', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', '00D4BB',
-                '2C99A8', '00C2FF', '344593', '6473FF', '0018EC', '8438FF', '520085', 'CB38FF', 'FF95C8', 'FF37C7')
+        # hexs = ('FF3838', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', '00D4BB',
+        #         '2C99A8', '00C2FF', '344593', '6473FF', '0018EC', '8438FF', '520085', 'CB38FF', 'FF95C8', 'FF37C7')
+        hexs =('30EEE2', 'CC2400', '00ACA4')
         self.palette = [self.hex2rgb(f'#{c}') for c in hexs]
         self.n = len(self.palette)
 
@@ -238,18 +241,19 @@ def output_to_target(output, max_det=300):
     for i, o in enumerate(output):
         box, conf, cls = o[:max_det, :6].cpu().split((4, 1, 1), 1)
         j = torch.full((conf.shape[0], 1), i)
-        targets.append(torch.cat((j, cls, xyxy2xywh(box), conf), 1))
+        targets.append(torch.cat((j, cls, box, conf), 1))
+
     return torch.cat(targets, 0).numpy()
 
 
 # @threaded
 def plot_images(images, targets, paths=None, fname='images.jpg', names=['Fovea','SCR']):
     # Plot image grid with labels
+    sample_image = images[0].cpu().permute(1,2,0)
     if isinstance(images, torch.Tensor):
         images = images.cpu().float().numpy()
     if isinstance(targets, torch.Tensor):
         targets = targets.cpu().numpy()
-
 
     max_size = 1920  # max image size
     max_subplots = 16  # max image subplots, i.e. 4x4
@@ -267,33 +271,40 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=['Fovea',
     if scale < 1:
         h = math.ceil(scale * h)
         w = math.ceil(scale * w)
+        # m = max(h, w)
+        images = np.array([cv2.resize(im.transpose(1, 2, 0), (w, h)) for im in images])
         mosaic = cv2.resize(mosaic, tuple(int(x * ns) for x in (w, h)))
 
+    else:
+        images = images.transpose(0, 2, 3, 1)
 
     for i, im in enumerate(images):
         if i == max_subplots:  # if last batch has fewer images than we expect
             break
         x, y = int(w * (i // ns)), int(h * (i % ns))  # block origin
 
-        im = im.transpose(1, 2, 0) #.astype(np.uint8)
+        # im = im.transpose(1, 2, 0) #.astype(np.uint8)
         # print(type(im[0][0]), im[0][0])
 
-        mosaic[y:y + h, x:x + w, :] = im#[:h, :w]
+        mosaic[y:y + h, x:x + w, :] = im #[:h, :w]
 
     fs = int((h + w) * ns * 0.01)  # font size
     annotator = Annotator(mosaic, line_width=round(fs / 10), font_size=fs, pil=True, example=names)
 
 
-    # print('*******', i, i+1,bs)
     if len(targets)>0:
         for i in range(i + 1):
             x, y = int(w * (i // ns)), int(h * (i % ns))  # block origin
             annotator.rectangle([x, y, x + w, y + h], None, (255, 255, 255), width=2)  # borders
-            if paths:
-                annotator.text((x + 5, y + 5), text=Path(paths[i]).name[:40], txt_color=(220, 220, 220))  # filenames
+            # if paths:
+            #     annotator.text((x + 5, y + 5), text=Path(paths[i]).name[:40], txt_color=(220, 220, 220))  # filenames
             ti = targets[targets[:, 0] == i]  # image targets
             if len(ti) > 0:
-                boxes = xywh2xyxy(ti[:, 2:6]).T
+                # boxes = xywh2xyxy(ti[:, 2:6]).T
+
+                boxes = ti[:, 2:6]
+                _, boxes = transforms.Resize((h, w))(sample_image, torch.tensor(boxes))
+                boxes = boxes.numpy().T
                 # print(boxes, boxes.shape, '\n')
                 classes = ti[:, 1].astype('int')
                 labels = ti.shape[-1] == 6  # labels if no conf column
@@ -305,15 +316,17 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=['Fovea',
                         boxes[[1, 3]] *= h
                     elif scale < 1:  # absolute coords need scale if image scales
                         boxes *= scale
+                    
                 boxes[[0, 2]] += x
                 boxes[[1, 3]] += y
                 for j, box in enumerate(boxes.T.tolist()):
                     cls = classes[j]
-                    color = colors(cls)
+                    color = colors(cls-1)
                     cls = names[cls-1] if names else cls
                     if labels or conf[j] > 0.25:  # 0.25 conf thresh
                         label = f'{cls}' if labels else f'{cls} {conf[j]:.1f}'
                         annotator.box_label(box, label, color=color)
+    # wandb.image({fname: annotator.im})
     annotator.im.save(fname)  # save
 
 

@@ -17,10 +17,11 @@ from collections import OrderedDict
 from matplotlib import pyplot as plt
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-
 from pretrain import *
 from model.transformer import Encoder
 from utils.util import (get_pickles, ids, fold_operation, split, load_one_pickle, plot_attention)
+
+
 
 
 
@@ -45,7 +46,7 @@ def setup(rank, world_size):
     torch.cuda.set_device(rank)
 
 
-def run_inference(siamese_net, val_loader, device, thres=0.5):
+def run_inference(siamese_net, val_loader, device, gradcam, thres=0.5):
 	"""
 	"""
 	siamese_net.eval()
@@ -56,7 +57,7 @@ def run_inference(siamese_net, val_loader, device, thres=0.5):
 		tns = 0
 		total = 0
 
-		print(('\n' + '%22s' * 5) % ('Correct', '(TP,P)', '(TN,N)', 'Accuracy', 'Loss'))
+		print(('\n' + '%44s' + '%22s' * 4) % ('Correct', '(TP,P)', '(TN,N)', 'Accuracy', 'Loss'))
 		pbar = tqdm(enumerate(val_loader), total=len(val_loader), bar_format=TQDM_BAR_FORMAT)
 
 		for batch_idx, (x1, x2, targets, f1, f2) in pbar:
@@ -64,8 +65,11 @@ def run_inference(siamese_net, val_loader, device, thres=0.5):
 			x2 = x2.to(device, non_blocking=True)
 			targets = targets.to(device, non_blocking=True)
 
+
+			
+
 			# Forward pass
-			embeddings1, embeddings2, atn1, atn2 = siamese_net(x1, x2)
+			embeddings1, embeddings2 = siamese_net(x1, x2)
 			
 			# print(atn1.shape, atn2.shape)
 
@@ -91,12 +95,18 @@ def run_inference(siamese_net, val_loader, device, thres=0.5):
 
 			# accumulate loss
 			total_loss += loss.item()
+			# ipt = [*x1, *x2]
+			
+			
 
-			plot_attention(x1, atn1, f1)
+			# plot_attention(x1, atn1, f1)
 
 
 
 			pbar.set_description(('%44s' + '%22s'*2 +'%22.4g' * 2) % (correct, f'({tp},{p})', f'({tn},{n})', correct/(p+n), loss.item()))
+
+			# if batch_idx > 4:
+			# 	break
 
 
 		# calculate average loss and accuracy
@@ -126,12 +136,16 @@ def infer(device, opt):
 	# define the siamese network model
 	encoder = Encoder(hidden_dim=256, num_encoder_layers=6, nheads=8)
 	siamese_net = SiameseNetwork(encoder).to(device)
+	
+
+	# print(A)	
+
 	siamese_net = DDP(siamese_net, device_ids=[0], find_unused_parameters=False)
 
 	ckptfile = root + weights_path + '.pth'
 	ckpt = torch.load(ckptfile, map_location='cpu')
 
-	print(('\n'+ '%44s' + '%10s' * 5) % ('Training stats for model:', ckptfile, 
+	print(('\n'+ '%44s' + '%22s' * 5) % ('Training stats for model:', ckptfile, 
 										f'Epochs:', ckpt['epoch'], 
 										f'Best accuracy:', ckpt['best_val_acc']))
 
@@ -140,12 +154,18 @@ def infer(device, opt):
 	siamese_net.load_state_dict(ckpt)
 	siamese_net.to(device)
 
+	for name, layer in siamese_net.named_modules():
+		if isinstance(layer, torch.nn.Conv2d):
+			print(name, layer)	
+
+
+	
 	_, val = split(folds, fold)
 	val_loader, _ = get_dataset(0, 0, val, phase=phase,transform=None, batch_size=batch_size, task='infer')
 
-	run_inference(siamese_net, val_loader, device)
-	cleanup()
 
+	run_inference(siamese_net, val_loader, device, gradcam)
+	cleanup()
 
 
 def arg_parse():
@@ -155,7 +175,7 @@ def arg_parse():
 	parser.add_argument('--folds', type=int, default=5, help='number of dataset folds for training')
 	parser.add_argument('--val_folder', type=str, default='val2', help='name of the directory containing validation samples') 
 	parser.add_argument('--f', type=int, default=0, help='fold number to validate')
-	parser.add_argument('--batch_size', type=int, default=16, help='batch size')
+	parser.add_argument('--batch_size', type=int, default=2, help='batch size')
 
 	return parser.parse_args()
 

@@ -24,9 +24,17 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision.models import resnet50, ResNet50_Weights
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
+from functools import reduce
+
 
 from model.transformer import Encoder
 from utils.util import (get_pickles, ids, fold_operation, split, load_one_pickle)
+
+from pytorch_grad_cam import GradCAM as gc
+# from pytorch_grad_cam.utils import visualize_cam
+from pytorch_grad_cam.utils.image import show_cam_on_image
+
+
 
 torch.manual_seed(3500)
 np.random.seed(3500)
@@ -157,7 +165,7 @@ def save_model(root, siamese_net, epoch, optimizer, acc, best_accuracy, fold):
 
 
 
-def train_epoch(rank, siamese_net, fold, optimizer, train_loader, val_loader, best_accuracy, epoch, epochs, opt, running_loss=0):  
+def train_epoch(rank, siamese_net, fold, optimizer, train_loader, val_loader, best_accuracy, epoch, epochs, opt, gradcam, running_loss=0):  
 
     if rank ==0:
         print(('\n' + '%44s'+'%22s' * 3) % ('Fold', 'Epoch', 'GPU Mem','Loss'))
@@ -170,6 +178,15 @@ def train_epoch(rank, siamese_net, fold, optimizer, train_loader, val_loader, be
         targets = targets.to(rank, non_blocking=True)
 
         optimizer.zero_grad()
+
+        # mask = gradcam(input_tensor=x1)
+        # result = show_cam_on_image(mask, x1)
+        # plt.imshow(result)
+        # plt.savefig('results.png')
+        # plt.show()
+        # plt.close()
+
+        # print(A)
         
         # Forward pass
         with autocast():
@@ -194,8 +211,8 @@ def train_epoch(rank, siamese_net, fold, optimizer, train_loader, val_loader, be
         #     break
     
     acc =  validate(rank, siamese_net, val_loader)
-    if rank==0:
-        best_accuracy=save_model(opt.root, siamese_net, epoch, optimizer, acc, best_accuracy, fold)
+    # if rank==0:
+    #     best_accuracy=save_model(opt.root, siamese_net, epoch, optimizer, acc, best_accuracy, fold)
 
     # return siamese_net, optimizer
     return best_accuracy
@@ -351,14 +368,17 @@ def pretrainer(rank, world_size, opt):
                                             batch_size=batch_size)
     val_loader, val_sampler = get_dataset(world_size, rank, val,
                                         phase=phases[1],transform=tx_dict['val'], 
-                                        batch_size=int(batch_size/4))
+                                        batch_size=int(batch_size))
+
+    target = get_module_by_name(encoder, 'backbone.7.2.conv3')
+    gradcam = 0#gc(model=encoder, target_layers=[target], use_cuda=True)
 
     for epoch in range(start_epoch, num_epochs):
         train_sampler.set_epoch(epoch)
         best_accuracy = train_epoch(
                     rank, siamese_net, fold, optimizer, train_loader, 
                     val_loader, best_accuracy,
-                    epoch, num_epochs, opt, running_loss=0
+                    epoch, num_epochs, opt, gradcam=gradcam, running_loss=0
                     )
         lr_scheduler.step() 
         torch.cuda.empty_cache()
@@ -378,6 +398,9 @@ def pretrainer(rank, world_size, opt):
 
     cleanup()
       
+def get_module_by_name(module, access_string):
+	names = access_string.split(sep='.')
+	return reduce(getattr, names, module)
 
 
 __all__ = ['pretrainer', 'train_epoch', 'SiameseDataset', 'SiameseNetwork', 'contrastive_focal_loss', 'get_distance',
@@ -388,15 +411,15 @@ __all__ = ['pretrainer', 'train_epoch', 'SiameseDataset', 'SiameseNetwork', 'con
 def arg_parse():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, default='/media/jakep/eye/scr/dent/', help='project root path')
-    parser.add_argument('--world_size', type=int, default=2, help='World size')
+    parser.add_argument('--world_size', type=int, default=1, help='World size')
     parser.add_argument('--resume', type=bool, default=False, help='To resume or not to resume')
-    parser.add_argument('--resume_weight', type=str, default='best_pretrainer', help='path to trained weights if resume')
+    parser.add_argument('--resume_weight', type=str, default='last_pretrainer', help='path to trained weights if resume')
     parser.add_argument('--train_folder', type=str, default='train2', help='name of the directory containing training samples')
     parser.add_argument('--val_folder', type=str, default='val2', help='name of the directory containing validation samples')    
     parser.add_argument('--epochs', type=int, default=50, help='number of epochs to train')
     parser.add_argument('--folds', type=int, default=5, help='number of dataset folds for training')
-    parser.add_argument('--cf', type=int, default=0, help='fold number to train. Must be provided if resume is not False')
-    parser.add_argument('--batch_size', type=int, default=64, help='batch size')
+    parser.add_argument('--cf', type=int, default=4, help='fold number to train. Must be provided if resume is not False')
+    parser.add_argument('--batch_size', type=int, default=32, help='batch size')
 
     return parser.parse_args()
 

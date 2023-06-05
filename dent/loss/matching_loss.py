@@ -1,4 +1,3 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 """
 Modules to compute the matching cost and solve the corresponding LSAP.
 """
@@ -43,6 +42,26 @@ def box_iou(boxes1, boxes2):
 
     iou = inter / union
     return iou, union
+
+
+def box_iou_loss(boxes1, boxes2):
+
+    assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
+    assert (boxes2[:, 2:] >= boxes2[:, :2]).all()
+    
+    area1 = box_area(boxes1)
+    area2 = box_area(boxes2)
+
+    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])  # [N,M,2]
+    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])  # [N,M,2]
+
+    wh = (rb - lt).clamp(min=0)  # [N,M,2]
+    inter = wh[:, :, 0] * wh[:, :, 1]  # [N,M]
+
+    union = area1[:, None] + area2 - inter
+
+    iou = inter / union
+    return 1-iou
 
 
 def generalized_box_iou(boxes1, boxes2):
@@ -174,4 +193,4 @@ class HungarianMatcher(nn.Module):
 
 
 def build_matcher():
-    return HungarianMatcher(cost_class=1, cost_bbox=5, cost_giou=2)
+    return HungarianMatcher(cost_class=2, cost_bbox=3, cost_giou=5)

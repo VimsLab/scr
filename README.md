@@ -1,8 +1,8 @@
 # Deformable Encoder Transformer (DEnT) 
 
-### Switch to branch three
+### Switch to branch wacv
 ```shell
-git switch three
+git switch wacv
 ```
 
 ## Dataset

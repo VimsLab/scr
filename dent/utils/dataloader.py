@@ -146,8 +146,8 @@ class LoadImagesAndLabels(Dataset):
 				files[root].append(tail)
 				files[root] = sorted(files[root])
 
-		p = Path(self.dataroot) / p 
-		q = Path(self.dataroot) / q
+		# p = Path(self.dataroot) / p 
+		# q = Path(self.dataroot) / q
 
 		if self.rank==0:
 

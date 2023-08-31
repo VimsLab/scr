@@ -1,74 +1,182 @@
-# files = "[/media/jakep/eye/scr/pickle/train2/74L113_0.pkl, /media/jakep/eye/scr/pickle/train2/95R14_9.pkl][/media/jakep/eye/scr/pickle/train2/96L26_11.pkl, /media/jakep/eye/scr/pickle/train2/109L210_16.pkl][/media/jakep/eye/scr/pickle/train2/83L17_0.pkl, /media/jakep/eye/scr/pickle/train2/82L312_5.pkl][/media/jakep/eye/scr/pickle/train2/142R11_11.pkl, /media/jakep/eye/scr/pickle/train2/17R80_5.pkl][/media/jakep/eye/scr/pickle/train2/86L110_3.pkl, /media/jakep/eye/scr/pickle/train2/86L114_1.pkl][/media/jakep/eye/scr/pickle/train2/97R23_8.pkl, /media/jakep/eye/scr/pickle/train2/142L10_2.pkl][/media/jakep/eye/scr/pickle/train2/11R11_10.pkl, /media/jakep/eye/scr/pickle/train2/136R13_1.pkl][/media/jakep/eye/scr/pickle/train2/131R16_8.pkl, /media/jakep/eye/scr/pickle/train2/108R1113_0.pkl][/media/jakep/eye/scr/pickle/train2/6L43_8.pkl, /media/jakep/eye/scr/pickle/train2/10R31_0.pkl][/media/jakep/eye/scr/pickle/train2/140L1110_2.pkl, /media/jakep/eye/scr/pickle/train2/17L710_8.pkl][/media/jakep/eye/scr/pickle/train2/136L112_15.pkl, /media/jakep/eye/scr/pickle/train2/17R67_1.pkl][/media/jakep/eye/scr/pickle/train2/88R16_11.pkl, /media/jakep/eye/scr/pickle/train2/20R12_1.pkl][/media/jakep/eye/scr/pickle/train2/77L13_11.pkl, /media/jakep/eye/scr/pickle/train2/140L113_0.pkl][/media/jakep/eye/scr/pickle/train2/137R14_6.pkl, /media/jakep/eye/scr/pickle/train2/135R17_0.pkl][/media/jakep/eye/scr/pickle/train2/137L112_13.pkl, /media/jakep/eye/scr/pickle/train2/95R3210_5.pkl][/media/jakep/eye/scr/pickle/train2/14R11_9.pkl, /media/jakep/eye/scr/pickle/train2/94R14_2.pkl][/media/jakep/eye/scr/pickle/train2/20R40_8.pkl, /media/jakep/eye/scr/pickle/train2/14L112_0.pkl][/media/jakep/eye/scr/pickle/train2/17R31_10.pkl, /media/jakep/eye/scr/pickle/train2/10L19_1.pkl][/media/jakep/eye/scr/pickle/train2/136L110_4.pkl, /media/jakep/eye/scr/pickle/train2/87R113_14.pkl][/media/jakep/eye/scr/pickle/train2/84L324_8.pkl, /media/jakep/eye/scr/pickle/train2/6L45_3.pkl][/media/jakep/eye/scr/pickle/train2/17L313_11.pkl, /media/jakep/eye/scr/pickle/train2/17L39_13.pkl][/media/jakep/eye/scr/pickle/train2/97R27_13.pkl, /media/jakep/eye/scr/pickle/train2/91R123_2.pkl][/media/jakep/eye/scr/pickle/train2/10R112_10.pkl, /media/jakep/eye/scr/pickle/train2/11R20_2.pkl][/media/jakep/eye/scr/pickle/train2/107L19_9.pkl, /media/jakep/eye/scr/pickle/train2/133R14_3.pkl][/media/jakep/eye/scr/pickle/train2/135R18_11.pkl, /media/jakep/eye/scr/pickle/train2/135R10_9.pkl][/media/jakep/eye/scr/pickle/train2/88L112_8.pkl, /media/jakep/eye/scr/pickle/train2/79R10_1.pkl][/media/jakep/eye/scr/pickle/train2/95R218_13.pkl, /media/jakep/eye/scr/pickle/train2/145L120_4.pkl][/media/jakep/eye/scr/pickle/train2/14R310_7.pkl, /media/jakep/eye/scr/pickle/train2/121R2114_15.pkl][/media/jakep/eye/scr/pickle/train2/91R127_6.pkl, /media/jakep/eye/scr/pickle/train2/14L210_12.pkl][/media/jakep/eye/scr/pickle/train2/145R1210_4.pkl, /media/jakep/eye/scr/pickle/train2/133L11_10.pkl][/media/jakep/eye/scr/pickle/train2/83L37_4.pkl, /media/jakep/eye/scr/pickle/train2/77L213_13.pkl][/media/jakep/eye/scr/pickle/train2/154L18_10.pkl, /media/jakep/eye/scr/pickle/train2/19R38_2.pkl][/media/jakep/eye/scr/pickle/train2/91R129_8.pkl, /media/jakep/eye/scr/pickle/train2/154L12_1.pkl][/media/jakep/eye/scr/pickle/train2/86R211_5.pkl, /media/jakep/eye/scr/pickle/train2/95R12_12.pkl][/media/jakep/eye/scr/pickle/train2/10R21_13.pkl, /media/jakep/eye/scr/pickle/train2/90R21_1.pkl][/media/jakep/eye/scr/pickle/train2/10R18_7.pkl, /media/jakep/eye/scr/pickle/train2/20R33_2.pkl][/media/jakep/eye/scr/pickle/train2/91R39_4.pkl, /media/jakep/eye/scr/pickle/train2/94L26_9.pkl][/media/jakep/eye/scr/pickle/train2/140R113_6.pkl, /media/jakep/eye/scr/pickle/train2/95R241_1.pkl][/media/jakep/eye/scr/pickle/train2/90L110_5.pkl, /media/jakep/eye/scr/pickle/train2/10R37_11.pkl][/media/jakep/eye/scr/pickle/train2/145R127_11.pkl, /media/jakep/eye/scr/pickle/train2/96R114_2.pkl][/media/jakep/eye/scr/pickle/train2/15L1212_4.pkl, /media/jakep/eye/scr/pickle/train2/17L68_13.pkl][/media/jakep/eye/scr/pickle/train2/90L213_10.pkl, /media/jakep/eye/scr/pickle/train2/94R110_5.pkl][/media/jakep/eye/scr/pickle/train2/108L14_4.pkl, /media/jakep/eye/scr/pickle/train2/89L33_10.pkl][/media/jakep/eye/scr/pickle/train2/94L13_13.pkl, /media/jakep/eye/scr/pickle/train2/94L18_13.pkl][/media/jakep/eye/scr/pickle/train2/139L120_11.pkl, /media/jakep/eye/scr/pickle/train2/75R18_6.pkl][/media/jakep/eye/scr/pickle/train2/3R4111_0.pkl, /media/jakep/eye/scr/pickle/train2/20R17_6.pkl][/media/jakep/eye/scr/pickle/train2/108R1110_6.pkl, /media/jakep/eye/scr/pickle/train2/17R65_12.pkl][/media/jakep/eye/scr/pickle/train2/17L810_12.pkl, /media/jakep/eye/scr/pickle/train2/77L13_2.pkl][/media/jakep/eye/scr/pickle/train2/14L29_2.pkl, /media/jakep/eye/scr/pickle/train2/82L312_9.pkl][/media/jakep/eye/scr/pickle/train2/11L413_4.pkl, /media/jakep/eye/scr/pickle/train2/121L114_12.pkl][/media/jakep/eye/scr/pickle/train2/80R10_2.pkl, /media/jakep/eye/scr/pickle/train2/90L35_9.pkl][/media/jakep/eye/scr/pickle/train2/18L114_12.pkl, /media/jakep/eye/scr/pickle/train2/18L17_9.pkl][/media/jakep/eye/scr/pickle/train2/97R37_5.pkl, /media/jakep/eye/scr/pickle/train2/85R23_12.pkl][/media/jakep/eye/scr/pickle/train2/78L37_8.pkl, /media/jakep/eye/scr/pickle/train2/14L11_13.pkl][/media/jakep/eye/scr/pickle/train2/145R117_13.pkl, /media/jakep/eye/scr/pickle/train2/142L14_0.pkl][/media/jakep/eye/scr/pickle/train2/90L114_8.pkl, /media/jakep/eye/scr/pickle/train2/87L31_3.pkl][/media/jakep/eye/scr/pickle/train2/84L3212_13.pkl, /media/jakep/eye/scr/pickle/train2/121R227_8.pkl][/media/jakep/eye/scr/pickle/train2/135L11_4.pkl, /media/jakep/eye/scr/pickle/train2/11R36_13.pkl][/media/jakep/eye/scr/pickle/train2/83R25_4.pkl, /media/jakep/eye/scr/pickle/train2/83R29_3.pkl][/media/jakep/eye/scr/pickle/train2/80L27_13.pkl, /media/jakep/eye/scr/pickle/train2/6R48_5.pkl][/media/jakep/eye/scr/pickle/train2/140L1111_6.pkl, /media/jakep/eye/scr/pickle/train2/15R11_0.pkl][/media/jakep/eye/scr/pickle/train2/132L17_10.pkl, /media/jakep/eye/scr/pickle/train2/17L716_15.pkl][/media/jakep/eye/scr/pickle/train2/14R313_7.pkl, /media/jakep/eye/scr/pickle/train2/14R310_10.pkl][/media/jakep/eye/scr/pickle/train2/131R111_2.pkl, /media/jakep/eye/scr/pickle/train2/108R117_10.pkl]"
-# bracket = files.split('[')[1:]
-# bracket = [a[:-1] for a in bracket]
-# a = []
-# b = []
-# for brack in bracket:
-# 	one = brack.split(',')
-# 	a.append(one[0])
-# 	b.append(one[1])
-
-# d = [(i,j) for i,j in zip(a,b)]
-# print(len(d))
-
-
-
+import warnings
+warnings.filterwarnings('ignore')
+warnings.simplefilter('ignore')
+import cv2
+import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F 
-from torchvision.models import resnet50, ResNet50_Weights
+import torchvision
+from pytorch_grad_cam import AblationCAM, EigenCAM
+from pytorch_grad_cam.ablation_layer import AblationLayerFasterRCNN
+from pytorch_grad_cam.utils.model_targets import FasterRCNNBoxScoreTarget
+from pytorch_grad_cam.utils.image import show_cam_on_image, scale_accross_batch_and_channels, scale_cam_image
+import matplotlib.pyplot as plt 
+import requests
+from model.transformer import Encoder, Dent_Pt
+from PIL import Image
 
 
-def printer(vals, names):
-	print('\n')
-	for val, name in zip(vals, names):
-		print(f'{name}: {val.shape}')
-
-class Encoder(nn.Module):
-    def __init__(self, hidden_dim=256, nheads=8, num_encoder_layers=6, dropout_rate=0.1):
-        super().__init__()
-        backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
-        self.backbone = nn.Sequential(*list(backbone.children())[:-2])
-        self.hidden_dim = hidden_dim
-        self.nheads = nheads
-        self.num_encoder_layers = num_encoder_layers
-        self.dropout_rate = dropout_rate
-        
-        # Create a positional encoding module
-        self.position_embedding = nn.Parameter(torch.randn(1, hidden_dim, 1, 1))
-        
-        # Create a linear layer for embedding the encoder features
-        self.linear_emb = nn.Linear(2048, hidden_dim)
-        
-        # Create a transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nheads, dropout=dropout_rate)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
-        
-    def forward(self, inputs):
-        # Get the features from the backbone
-        feature = self.backbone(inputs)
-        
-        # Flatten the features and apply the linear embedding
-        batch_size, channels, height, width = feature.shape
-        features = feature.flatten(2).transpose(1, 2) # shape: (batch_size, num_patches, channels)
-        encoder_embedding = self.linear_emb(features) # shape: (batch_size, num_patches, hidden_dim)
-        
-        # Add the positional encoding to the embeddings
-        position_encoding = self.position_embedding.repeat(batch_size, 1, height, width).flatten(2).transpose(1, 2)
-        encoder_encoding = encoder_embedding + position_encoding # shape: (batch_size, num_patches, hidden_dim)
-        
-        # Apply the transformer encoder
-        encoder_outputs = self.encoder(encoder_encoding.transpose(0, 1)) # shape: (seq_len, batch_size, hidden_dim)
+def predict(input_tensor, model, device, detection_threshold, coco_names):
+    outputs = model(input_tensor)
+    logits, boxes = outputs #torch.softmax(outputs['pred_logits'], dim=-1)[0], outputs['pred_boxes'][0]
+    score, labels = torch.max(logits, dim=-1)
+    l = labels < len(coco_names)
+    labels = labels[l]
+    score = score[l]
+    boxes = boxes[l]
+    pred_classes = [coco_names[i] for i in labels.detach().cpu().numpy()]
+    pred_labels = labels.detach().cpu().numpy()
+    pred_scores = score.detach().cpu().numpy()
+    pred_bboxes = boxes.detach().cpu().numpy()
+    
+    boxes, classes, labels, indices = [], [], [], []
+    for index in range(len(pred_scores)):
+        if pred_scores[index] >= detection_threshold:
+            boxes.append(pred_bboxes[index])
+            classes.append(pred_classes[index])
+            labels.append(pred_labels[index])
+            indices.append(index)
+    
+    # boxes = box_cxcywh_to_xyxy(torch.tensor(boxes))
+    _, _, _,h, w = input_tensor.shape
+    # boxes[...,::2] *= w
+    # boxes[...,1::2] *= h
+    print(boxes, classes, labels, indices)
+    return boxes, classes, labels, indices
 
 
-        printer([inputs, feature, features, encoder_embedding, position_encoding, encoder_encoding, encoder_outputs], 
-			['Input image', 'Backbone features', 'Flattened features', 'Linear embedding of features', 
-			'Position Encoding', 'Encoder embedding', 'Encoder output'])
-        
-        return encoder_outputs
+class FasterRCNNBoxScoreTarget:
+
+  def __init__(self, labels, bounding_boxes, iou_threshold=0.5):
+      self.labels = labels
+      self.bounding_boxes = bounding_boxes
+      self.iou_threshold = iou_threshold
+
+  def __call__(self, model_outputs):
+      output = torch.Tensor([0])
+      if torch.cuda.is_available():
+          output = output.cuda()
+
+      if len(model_outputs["boxes"]) == 0:
+          return output
+
+      for box, label in zip(self.bounding_boxes, self.labels):
+          box = torch.Tensor(box[None, :])
+          if torch.cuda.is_available():
+              box = box.cuda()
+
+          ious = torchvision.ops.box_iou(box, model_outputs["boxes"])
+          index = ious.argmax()
+          if ious[0, index] > self.iou_threshold and model_outputs["labels"][index] == label:
+              score = ious[0, index] + model_outputs["scores"][index]
+              output = output + score
+      return output
+
+def ttty(x):
+    print(x.size())
+    return x
+
+def major_stuff(m, tgets, colors, input_tensor, image_float_np):
+  print(input_tensor.shape)
+  grayscale_cam = m(input_tensor, targets=tgets)
+  # Take the first image in the batch:
+  grayscale_cam = grayscale_cam[0, :]
+  cam_image = show_cam_on_image(image_float_np, grayscale_cam, use_rgb=True)
+  # And lets draw the boxes again:
+  return cam_image
+  # image_with_bounding_boxes = draw_boxes(boxes, labels, classes, cam_image, colors)
+  # return image_with_bounding_boxes
+  
 
 
+def stuff(colors, model, labels, boxes, input_tensor, image_float_np, classes):
+#   for i, n in model.named_parameters():
+#       if n.requires_grad:
+#         print(i)
+  target_layers = [model.encoder.backbone.layer4[-1]]
+  # target_layers = [model.transformer.encoder.layers[-1].norm2]
+  targets = [FasterRCNNBoxScoreTarget(labels=labels, bounding_boxes=None)]
+  cam = EigenCAM(model,
+                target_layers, 
+                use_cuda=torch.cuda.is_available(),
+                reshape_transform=ttty)
+  cam_image=major_stuff(cam, targets, colors, input_tensor, image_float_np)
+#   image_with_bounding_boxes = draw_boxes(boxes, labels, classes, cam_image, colors)
+  return cam_image #image_with_bounding_boxes
 
-x = torch.rand((8, 3, 224, 256))
-encoder = Encoder()
-output = encoder(x)
+
+def box_cxcywh_to_xyxy(x):
+    x_c, y_c, w, h = x.unbind(-1)
+    b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
+         (x_c + 0.5 * w), (y_c + 0.5 * h)]
+    return torch.stack(b, dim=-1).numpy()
+
+def draw_boxes(boxes, labels, classes, image, COLORS):
+    
+    for i, box in enumerate(boxes):
+        color = COLORS[labels[i]+1]
+        cv2.rectangle(
+            image,
+            (int(box[0]), int(box[1])),
+            (int(box[2]), int(box[3])),
+            color, 2
+        )
+        cv2.putText(image, classes[i], (int(box[0]), int(box[1] - 5)),
+                    cv2.FONT_HERSHEY_TRIPLEX, 0.8, color, 1,
+                    lineType=cv2.LINE_AA)
+    return image
+
+def get_model():
+    encoder = Encoder(hidden_dim=256,num_encoder_layers=6, nheads=8)
+    model = Dent_Pt(encoder, hidden_dim=256, num_class=2)
+    return model
+
+def pre():
+  coco_names = ['__background__', 'Fovea', 'SCR']
+  # This will help us create a different color for each class
+  COLORS = np.random.uniform(0, 255, size=(len(coco_names)+5, 3))
+
+
+#   image_url = "https://raw.githubusercontent.com/jacobgil/pytorch-grad-cam/master/examples/both.png"
+#   image = np.array(Image.open(requests.get(image_url, stream=True).raw).resize((496,220)))
+  image = np.array(Image.open('imgc.jpg').convert(mode='RGB'))
+  print(image.shape, type(image), type(image[0][0][0]))
+  image_float_np = np.float32(image) / 255
+  transform = torchvision.transforms.Compose([
+      torchvision.transforms.ToTensor(),
+  ])
+
+  input_tensor = transform(image)
+  print(input_tensor.shape, image.shape, type(image), type(image[0][0][0]))
+  device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+  input_tensor = input_tensor.to(device)
+  input_tensor = torch.stack([input_tensor, input_tensor, input_tensor]).unsqueeze(0)
+  input_tensor = input_tensor.permute(1,0,2,3,4)
+  print(input_tensor.shape)
+  # Add a batch dimension:
+#   input_tensor = (input_tensor.unsqueeze(0)).unsqueeze(0)
+
+  # model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
+  #   model = torch.hub.load('facebookresearch/detr', 'detr_resnet50', pretrained=True)
+  #   model.eval().to(device)
+
+  model = get_model()
+  model.eval().to(device)
+
+  # Run the model and display the detections
+  boxes, classes, labels, indices = predict(input_tensor=input_tensor, model=model, device=device, detection_threshold=0.5, coco_names=coco_names)
+#   print(boxes[:3], classes, labels, type(boxes), type(classes), type(labels))
+#   boxes[:3] = np.array([[5,30,72,195], [94,28,353,191], [393,29,632,194]])
+#   classes[:3] = ['SCR', 'SCR', 'SCR']
+#   labels[:3] = [2,2,2]
+#   image = draw_boxes(boxes, labels, classes, image, COLORS)
+
+  atn = stuff(COLORS, model, None, None, input_tensor, image_float_np, classes)
+  return image, atn
+
+
+image, atn = pre()
+# Show the image:
+plt.imsave('imgc_filelike.png', image)
+plt.imsave('imgc_atnlike.png', atn)
+
+

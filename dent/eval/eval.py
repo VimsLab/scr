@@ -21,7 +21,7 @@ class Meter:
 		self.rank = rank
 
 	def adds(self, value, dim=0):
-		value = value.to(self.rank)
+		value = torch.tensor(value).to(self.rank)
 		if value.dim()<2:
 			value = value.reshape((1,-1))
 

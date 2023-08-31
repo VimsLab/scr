@@ -52,9 +52,8 @@ class CustomTransformerEncoderLayer(nn.TransformerEncoderLayer):
 	def forward(self, src, src_mask=None, src_key_padding_mask=None):
 		output = src
 		self_attn_weights = None
-		
 		if self.self_attn is not None:
-			output, self_attn_weights = self.self_attn(output, output, output, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)
+			output,_ = self.self_attn(output, output, output, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)
 		
 		if self.norm1 is not None:
 			output = self.norm1(output)
@@ -182,7 +181,7 @@ class CustomTransformerEncoder(nn.TransformerEncoder):
 		is_causal = make_causal
 
 		for mod in self.layers:
-			output, atn = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
+			output = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
 
 		if convert_to_nested:
 			output = output.to_padded_tensor(0.)
@@ -197,9 +196,14 @@ class Encoder(nn.Module):
 	def __init__(self, hidden_dim=256, nheads=8, num_encoder_layers=6, dropout_rate=0.1):
 		super().__init__()
 		backbone = resnet50(weights=ResNet50_Weights.DEFAULT)
-		backbone = nn.Sequential(*list(backbone.children())[:-2])
-		for i in backbone.parameters():
-			i.requires_grad=False
+		# backbone = nn.Sequential(*list(backbone.children())[:-2])
+		backbone.fc = torch.nn.Identity()
+		for i,n in backbone.named_parameters():
+			# if 'bn' in i:
+			# 	n.requires_grad=False
+			# else:
+				n.requires_grad=False
+			
 		self.backbone = backbone
 		self.hidden_dim = hidden_dim
 		self.nheads = nheads
@@ -218,22 +222,34 @@ class Encoder(nn.Module):
 		
 
 	def forward(self, inputs):
+		# print(inputs.shape)
 		# Get the features from the backbone
 		features = self.backbone(inputs)
+		# print('after backbone',features.shape)
+
+		if features.dim()==2:
+			features = (features.unsqueeze(-1)).unsqueeze(-1)
+		# print('after reshape',features.shape)
 		
 		# Flatten the features and apply the linear embedding
 		batch_size, channels, height, width = features.shape
 		features = features.flatten(2).transpose(1, 2) # shape: (batch_size, num_patches, channels)
+		# print('after flattening', features.shape)
 		encoder_embedding = self.linear_emb(features) # shape: (batch_size, num_patches, hidden_dim)
-
+		# print(A)
+		# print('after linear embedding', encoder_embedding.shape)
 		
 		# Add the positional encoding to the embeddings
 		position_encoding = self.position_embedding.repeat(batch_size, 1, height, width).flatten(2).transpose(1, 2)
+		# print('after position encoding', position_encoding.shape)
 		encoder_embedding += position_encoding # shape: (batch_size, num_patches, hidden_dim)
+
+		# print('after adding position encoding', encoder_embedding.shape)
 
 		
 		# Apply the transformer encoder
 		encoder_outputs = self.encoder(encoder_embedding) # shape: (batch_size, seq_len, hidden_dim) #16 144 256
+		# print('output shape', encoder_outputs.shape)
 		
 		return encoder_outputs
 
@@ -254,11 +270,11 @@ class TransformerDecoder(nn.Module):
 		output = tgt
 
 		for mod in self.layers:
-			output, atn = mod(output, memory)
-
+			output,_ = mod(output, memory)
 		if self.norm is not None:
 			output = self.norm(output)
 
+		
 		return output #, atn
 
 class TransformerDecoderLayer(nn.Module):
@@ -363,8 +379,9 @@ class Decoder(nn.Module):
 		n, b, le, hdim = memory.shape
 		tgt = torch.zeros((b, self.num_queries, self.hidden_dim), device=memory.device)
 
+
 		# dl = self.decoder_layer(tgt, memory)
-		output, atn = self.decoder(tgt, memory)
+		output = self.decoder(tgt, memory)
 
 		# Generate class and bbox embeddings from the output tensor
 		class_output = self.class_embed(output)

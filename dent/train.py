@@ -99,6 +99,25 @@ def get_dataset(rank, world_size, dataroot, phase, batch_size, r, space):
 								shuffle=True,
 								r=r,
 								space=space)
+	print(phase, len(dataset))
+	scr = 0
+	fovea = 0
+	non_empty = 0
+	iscr=0
+	ifov=0
+	for d in dataset:
+		s = d[1]
+		if len(s)>0:
+			non_empty+= 1
+		scr += (s[...,1]==2).sum()
+		if (s[...,1]==2).sum()>0:
+			iscr+=1
+		fovea += (s[...,1]==1).sum()
+		if (s[...,1]==1).sum()>0:
+			ifov+=1
+		# print(A)
+	print(scr, fovea, non_empty, iscr, ifov)
+
 	
 	return dataset
 
@@ -122,6 +141,8 @@ def compute_loss(outputs, targets, criterion, nc=2):
 
 
 def train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion, nc):
+
+	print(A)
 		
 	model.train()
 	criterion.train()
@@ -139,6 +160,7 @@ def train_epoch(rank, model, optimizer, train_loader, epoch, epochs, criterion, 
 	for batch_idx, (img, target,fns) in pbar:
 		img = img.to(rank, non_blocking=True)
 		target = [t.to(rank, non_blocking=True) for t in target]
+		
 		optimizer.zero_grad()
 
 		outputs = model(img.permute(1,0,2,3,4))
@@ -243,11 +265,14 @@ def detector(rank, world_size, opt):
 
 	encoder = Encoder(hidden_dim=256,num_encoder_layers=6, nheads=8).to(rank)
 	# encoder = DDP(encoder, device_ids=[rank], find_unused_parameters=False)
-
+	# for i, n in encoder.named_parameters():
+	# 	# if n.requires_grad:
+	# 	print(i)
+	# print('\n\n')
 	if pretraining:
 		encoder = load_saved_model(pretrain_weights, root, encoder, None)
-		for param in encoder.parameters():
-			param.requires_grad = False
+		# for param in encoder.parameters():
+		# 	param.requires_grad = False
 		print('Pretrained model {} loaded'.format(pretrain_weights))
 
 	train_data = get_dataset(rank, world_size, dataroot, 'train', batch_size, r, space)
@@ -256,6 +281,10 @@ def detector(rank, world_size, opt):
 	
 	# define detection model
 	model = Dent_Pt(encoder, hidden_dim=256, num_class=2).to(rank)
+	model.train()
+	pytorch_total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+	# print(pytorch_total_params)
+	# print(A)
 	model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
 	# declare optimizer and scheduler
@@ -318,10 +347,10 @@ def arg_parse():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=str, default='./', help='project root path')
     parser.add_argument('--dataroot', type=str, default='./data', help='path to pickled dataset')
-    parser.add_argument('--world_size', type=int, default=2, help='World size')
+    parser.add_argument('--world_size', type=int, default=1, help='World size')
     parser.add_argument('--resume', type=bool, default=False, help='To resume or not to resume')
     parser.add_argument('--resume_weights', type=str, default='best', help='path to trained weights if resume')
-    parser.add_argument('--pretrain', type=bool, default=True, help='Begin with pretrained weights or not. Must provide path if yes.')
+    parser.add_argument('--pretrain', type=bool, default=False, help='Begin with pretrained weights or not. Must provide path if yes.')
     parser.add_argument('--pretrain_weights', type=str, default='0best_pretrainer', help='path to pretrained weights. --pretrain must be true')
     
     parser.add_argument('--nc', type=int, default=2, help='number of classes')

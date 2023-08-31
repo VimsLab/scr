@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from natsort import natsorted
 
 
-main_folder = "../pickle"
+main_folder = "../pickle_pretrain"
 # sub_folders = os.listdir(main_folder)
 # sub_folders = [path.join(main_folder, sf) for sf in sub_folders if path.isdir(path.join(main_folder, sf))]
 # ann_folder = "original_annotations"
@@ -231,7 +231,7 @@ def get_positives(tidgroup):
 	for k, v in tidgroup.items():
 		pairs = [(v[i], v[j], 1) for i in range(len(v)) for j in range(i+1, min(i+4, len(v))) ]
 		positives.extend(pairs)
-
+	print('positives length=', len(positives))
 	return positives
 
 
@@ -242,11 +242,13 @@ def get_negatives(pg):
 	for i, k in enumerate(keys):
 		v = pg[k]
 		corr = min(i+1, l-1)
-		pair_k = random.choices(keys[corr:l], k=len(v)*3)
+		pair_k = random.choices(keys[corr:l], k=len(v)*20)
 		pair_v = [random.sample(pg[pk],1)[0] for pk in pair_k ]
-		pairs = [(x,y, 0) for x,y in zip(v+v+v, pair_v) ]
+		
+		pairs = [(x,y, 0) for x,y in zip(v*20, pair_v) ]
 		
 		negatives.extend(pairs)
+	print('negative length=', len(negatives))
 	return negatives
 
 
@@ -279,6 +281,8 @@ def dataset_pretrainer(pg, tg,f):
 
 	negatives = get_negatives(pg)
 	write_to_file('negative_'+str(f), negatives, prefix, suffix)
+
+	print(len(positives), len(negatives))
 
 	return positives, negatives
 
@@ -323,6 +327,7 @@ def fold_operation(f,p,t, fold):
 	for i in range(fold):
 		subkeysp = fp[i]
 		p = {a:group_pid[a] for a in subkeysp}
+		
 		subkeyst = ft[i]
 		t = {a:group_tid[a] for a in subkeyst}
 		pos, neg = dataset_pretrainer(p, t,i)
@@ -331,14 +336,18 @@ def fold_operation(f,p,t, fold):
 def split(fold, itr=0):
 	train = []
 	val = []
+	# print('\n\n')
 	for f in range(fold):
 		pos = read_from_file(f, 'positive')
 		neg = read_from_file(f, 'negative')
 		data = pos + neg 
+		# print(len(pos), len(neg))
 		random.shuffle(data)
 		if f == itr:
+			# print('VAL*************\n')
 			val.extend(data)
 		else:
+			# print('TRAIN*********\n')
 			train = train + data
 	return train, val
 
@@ -378,12 +387,16 @@ def dataset_trainer(f, p, t):
 if __name__ == '__main__':
 
 
-	pkl_files = get_pickles()
+	pkl_files = get_pickles(main_folder)
+	random.shuffle(pkl_files)
 	f, p, t = ids(pkl_files)
+	
+	print(len(f), len(p), len(t))
 
 	fold_operation(f,p,t,folds)
 
 	t, v = split(folds, 0)
+	print(len(t), len(v))
 
 	# dataset_trainer(f,p,t)
 	# read_data('val')
